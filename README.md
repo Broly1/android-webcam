@@ -47,7 +47,7 @@ sudo modprobe v4l2loopback
 ### **For Debian:**
 
 ```bash
-sudo apt install ./android-webcam_1.0.1-1_amd64.deb
+sudo apt install ./android-webcam_*_amd64.deb
 
 ```
 
