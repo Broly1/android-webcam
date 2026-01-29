@@ -14,7 +14,7 @@ copyright = "2026, Broly"
 depends = "adb, scrcpy, v4l2loopback-dkms, v4l2loopback-utils, libgtk-4-1"
 section = "utils"
 priority = "optional"
-revision = "1"
+revision = "2"
 maintainer-scripts = "debian-configs/"
 assets = [
     ["target/release/android-webcam", "/usr/bin/android-webcam", "755"],

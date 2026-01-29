@@ -9,6 +9,9 @@ Cargo.lock
 *.changes
 *.buildinfo
 
+# Arch packaging results
+*.pkg.tar.zst
+
 # Linux system/Editor swap files
 *~
 *.swp

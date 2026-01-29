@@ -1,7 +1,7 @@
 # Maintainer: Broly <jack_sparrow_xv@proton.me>
 pkgname=android-webcam
 pkgver=1.0.1
-pkgrel=1
+pkgrel=2
 pkgdesc="Use Android device as a webcam via scrcpy and v4l2loopback"
 arch=('x86_64')
 url="https://github.com/broly/android-webcam"
@@ -27,5 +27,5 @@ package() {
   install -Dm644 "debian-configs/modules.conf" "$pkgdir/etc/modules-load.d/android-webcam.conf"
   install -Dm644 "debian-configs/v4l2loopback.conf" "$pkgdir/etc/modprobe.d/android-webcam.conf"
 
-  touch "$pkgdir/usr/share/icons/hicolor"
+#  touch "$pkgdir/usr/share/icons/hicolor"
 }
