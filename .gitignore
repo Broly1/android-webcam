@@ -1,0 +1,21 @@
+# Rust build artifacts
+/target/
+Cargo.lock
+
+# Debian packaging results
+*.deb
+*.tar.gz
+*.dsc
+*.changes
+*.buildinfo
+
+# Linux system/Editor swap files
+*~
+*.swp
+.fuse_hidden*
+.directory
+.Trash-*
+
+# Editor-specific
+.vscode/
+.idea/

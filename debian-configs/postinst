@@ -1,0 +1,15 @@
+#!/bin/sh
+set -e
+
+# Load the kernel module
+modprobe v4l2loopback video_nr=128 card_label="Android-Webcam" exclusive_caps=1 || true
+
+# Update the icon cache
+if [ -x /usr/bin/gtk-update-icon-cache ]; then
+    gtk-update-icon-cache -f -t /usr/share/icons/hicolor || true
+fi
+
+# Add the user to the video group
+if [ -n "$SUDO_USER" ]; then
+    usermod -aG video "$SUDO_USER" || true
+fi

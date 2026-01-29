@@ -1,0 +1,31 @@
+# Maintainer: Broly <jack_sparrow_xv@proton.me>
+pkgname=android-webcam
+pkgver=1.0.1
+pkgrel=1
+pkgdesc="Use Android device as a webcam via scrcpy and v4l2loopback"
+arch=('x86_64')
+url="https://github.com/broly/android-webcam"
+
+depends=('v4l2loopback-dkms' 'v4l2loopback-utils' 'gtk4' 'ffmpeg' 'sdl2' 'scrcpy' 'android-tools')
+makedepends=('rust' 'cargo')
+
+source=()
+sha256sums=()
+
+build() {
+  cd "$startdir/.."
+  cargo build --release --locked
+}
+
+package() {
+  cd "$startdir/.."
+
+  install -Dm755 "target/release/android-webcam" "$pkgdir/usr/bin/android-webcam"
+  install -Dm644 "resources/android-webcam.desktop" "$pkgdir/usr/share/applications/android-webcam.desktop"
+  install -Dm644 "resources/android-webcam.png" "$pkgdir/usr/share/icons/hicolor/256x256/apps/android-webcam.png"
+
+  install -Dm644 "debian-configs/modules.conf" "$pkgdir/etc/modules-load.d/android-webcam.conf"
+  install -Dm644 "debian-configs/v4l2loopback.conf" "$pkgdir/etc/modprobe.d/android-webcam.conf"
+
+  touch "$pkgdir/usr/share/icons/hicolor"
+}

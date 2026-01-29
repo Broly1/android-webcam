@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Android Webcam
+Exec=android-webcam
+Icon=android-webcam
+Type=Application
+Categories=Utility;
+Terminal=false
+StartupWMClass=com.android.webcam
