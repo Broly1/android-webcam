@@ -5,6 +5,7 @@ pkgrel=2
 pkgdesc="Use Android device as a webcam via scrcpy and v4l2loopback"
 arch=('x86_64')
 url="https://github.com/broly/android-webcam"
+license=('GPL3')
 
 depends=('v4l2loopback-dkms' 'v4l2loopback-utils' 'gtk4' 'ffmpeg' 'sdl2' 'scrcpy' 'android-tools')
 makedepends=('rust' 'cargo')

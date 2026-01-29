@@ -4,6 +4,7 @@ version = "1.0.1"
 authors = ["Broly <jack_sparrow_xv@proton.me>"]
 edition = "2021"
 description = "Use Android device as a webcam via scrcpy and v4l2loopback"
+license = "GPL-3.0-or-later"
 
 [dependencies]
 gtk4 = "0.7.3"
