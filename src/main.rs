@@ -27,7 +27,7 @@ fn build_ui(app: &Application) {
     .application(app)
     .title("Android Webcam")
     .default_width(350)
-    .default_height(500)
+    .default_height(550)
     .build();
 
     let state = Arc::new(Mutex::new(AppState { current_process: None }));
@@ -44,14 +44,27 @@ fn build_ui(app: &Application) {
 
     let device_label = Label::new(None);
     let facing_dropdown = DropDown::from_strings(&["Back Camera", "Front Camera"]);
+
+    let camera_warning = Label::builder()
+    .use_markup(true)
+    .halign(gtk4::Align::Center)
+    .build();
+
     let res_combo = ComboBoxText::new();
+
+    let warning_label = Label::builder()
+    .use_markup(true)
+    .halign(gtk4::Align::Center)
+    .wrap(true)
+    .build();
+
     let fps_dropdown = DropDown::from_strings(&["30", "60"]);
     let mic_check = CheckButton::with_label("Block Phone Microphone");
 
     let button_box = Box::new(Orientation::Horizontal, 10);
     button_box.set_homogeneous(true);
 
-    let start_btn = Button::builder().label("🚀 Launch").css_classes(["suggested-action"]).build();
+    let start_btn = Button::builder().label("🚀 Launch / Update").css_classes(["suggested-action"]).build();
     let stop_btn = Button::builder().label("🛑 Stop").css_classes(["destructive-action"]).build();
 
     button_box.append(&start_btn);
@@ -62,8 +75,10 @@ fn build_ui(app: &Application) {
     controls_box.append(&device_label);
     controls_box.append(&Label::new(Some("Camera Selection:")));
     controls_box.append(&facing_dropdown);
+    controls_box.append(&camera_warning);
     controls_box.append(&Label::new(Some("Resolution:")));
     controls_box.append(&res_combo);
+    controls_box.append(&warning_label);
     controls_box.append(&Label::new(Some("FPS Limit:")));
     controls_box.append(&fps_dropdown);
     controls_box.append(&mic_check);
@@ -77,6 +92,31 @@ fn build_ui(app: &Application) {
     stack.add_named(&waiting_box, Some("waiting"));
     stack.add_named(&controls_box, Some("controls"));
 
+    facing_dropdown.connect_selected_notify(glib::clone!(@weak res_combo, @weak camera_warning => move |dd| {
+        let facing = if dd.selected() == 1 {
+            camera_warning.set_markup("<span foreground='#ffa500' size='small'>⚠️ Note: Back camera usually has better resolution</span>");
+            "front"
+        } else {
+            camera_warning.set_text("");
+            "back"
+        };
+        refresh_resolutions(&res_combo, facing);
+    }));
+
+    res_combo.connect_changed(glib::clone!(@weak warning_label => move |cb| {
+        if let Some(res_str) = cb.active_text() {
+            if let Some(width_str) = res_str.split('x').next() {
+                if let Ok(width) = width_str.parse::<u32>() {
+                    if width > 1920 {
+                        warning_label.set_markup("<span foreground='#ffa500' size='small'>⚠️ High resolution/FPS may cause phone to overheat</span>");
+                    } else {
+                        warning_label.set_text("");
+                    }
+                }
+            }
+        }
+    }));
+
     let apply_changes = glib::clone!(
         @weak facing_dropdown, @weak res_combo, @weak fps_dropdown, @weak mic_check, @weak status_label, @strong state => move || {
             let mut s = state.lock().unwrap();
@@ -86,6 +126,10 @@ fn build_ui(app: &Application) {
                 let _ = child.wait();
             }
 
+            let _ = Command::new("killall").arg("-9").arg("scrcpy").status();
+            let _ = Command::new("adb").args(["shell", "am", "force-stop", "com.genymobile.scrcpy"]).status();
+            thread::sleep(Duration::from_millis(500));
+
             if !Path::new("/dev/video128").exists() {
                 let _ = Command::new("pkexec")
                 .args(["modprobe", "v4l2loopback", "video_nr=128", "card_label=Android-Webcam", "exclusive_caps=1"])
@@ -93,8 +137,8 @@ fn build_ui(app: &Application) {
             }
 
             let facing = if facing_dropdown.selected() == 1 { "front" } else { "back" };
+            let res = res_combo.active_text().unwrap_or_else(|| "1920x1080".into());
             let fps = if fps_dropdown.selected() == 1 { "60" } else { "30" };
-            let res = res_combo.active_text().unwrap_or_else(|| "1280x720".into());
             let mic_blocked = mic_check.is_active();
 
             if let Some(child) = run_scrcpy(fps.to_string(), facing.to_string(), mic_blocked, res.to_string()) {
@@ -108,7 +152,6 @@ fn build_ui(app: &Application) {
     );
 
     let apply_shared = Arc::new(apply_changes);
-
     start_btn.connect_clicked(glib::clone!(@strong apply_shared => move |_| { (apply_shared)(); }));
 
     stop_btn.connect_clicked(glib::clone!(@strong state, @weak status_label => move |_| {
@@ -116,30 +159,11 @@ fn build_ui(app: &Application) {
             if let Some(mut child) = s.current_process.take() {
                 let _ = child.kill();
                 let _ = child.wait();
+                let _ = Command::new("adb").args(["shell", "am", "force-stop", "com.genymobile.scrcpy"]).status();
                 status_label.set_text("Stopped (Ready)");
             }
         }
     }));
-
-    let live_switch = glib::clone!(@strong apply_shared, @strong state => move || {
-        if state.lock().unwrap().current_process.is_some() { (apply_shared)(); }
-    });
-    let live_switch_shared = Arc::new(live_switch);
-
-    facing_dropdown.connect_selected_notify(glib::clone!(@weak res_combo, @strong live_switch_shared => move |dd| {
-        let facing = if dd.selected() == 1 { "front" } else { "back" };
-        refresh_resolutions(&res_combo, facing);
-
-        let ls = Arc::clone(&live_switch_shared);
-        glib::timeout_add_local(Duration::from_millis(150), move || {
-            (ls)();
-            glib::ControlFlow::Break
-        });
-    }));
-
-    res_combo.connect_changed(glib::clone!(@strong live_switch_shared => move |_| { (live_switch_shared)(); }));
-    fps_dropdown.connect_selected_notify(glib::clone!(@strong live_switch_shared => move |_| { (live_switch_shared)(); }));
-    mic_check.connect_toggled(glib::clone!(@strong live_switch_shared => move |_| { (live_switch_shared)(); }));
 
     thread::spawn(move || {
         let mut last_status = false;
@@ -189,25 +213,40 @@ fn refresh_resolutions(combo: &ComboBoxText, facing: &str) {
     .args(["--video-source=camera", &format!("--camera-facing={}", facing), "--list-camera-sizes"])
     .output();
 
+    let standards = ["3840x2160", "2560x1440", "1920x1080", "1280x720", "720x480"];
+    let mut found_sizes = Vec::new();
+
     if let Ok(out) = output {
         let text = format!("{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-        let mut sizes = Vec::new();
-        for line in text.lines().filter(|l| l.trim().starts_with('-')) {
-            for word in line.split_whitespace() {
-                let clean = word.trim_matches(|c: char| !c.is_ascii_digit() && c != 'x');
-                if clean.contains('x') && clean.chars().next().map_or(false, |c| c.is_ascii_digit()) {
-                    if let Ok(w) = clean.split('x').next().unwrap_or("0").parse::<u32>() {
-                        if w >= 640 && w <= 2560 {
-                            if !sizes.contains(&clean.to_string()) { sizes.push(clean.to_string()); }
-                        }
-                    }
+        let target_id = if facing == "back" { "--camera-id=0" } else { "--camera-id=1" };
+        let mut inside_target_block = false;
+
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("--camera-id=") {
+                inside_target_block = trimmed.contains(target_id);
+                continue;
+            }
+            if inside_target_block && trimmed.starts_with("- ") {
+                let size = trimmed.trim_start_matches("- ").trim();
+                if standards.contains(&size) {
+                    found_sizes.push(size.to_string());
                 }
             }
         }
-        sizes.sort_by_key(|s| s.split('x').next().unwrap_or("0").parse::<u32>().unwrap_or(0));
-        sizes.reverse();
-        for s in sizes { combo.append_text(&s); }
-        combo.set_active(Some(0));
+    }
+
+    found_sizes.sort_by_key(|s| s.split('x').next().unwrap_or("0").parse::<u32>().unwrap_or(0));
+    found_sizes.reverse();
+    found_sizes.dedup();
+
+    for s in &found_sizes {
+        combo.append_text(s);
+    }
+
+    let default_idx = found_sizes.iter().position(|r| r == "1920x1080").unwrap_or(0);
+    if !found_sizes.is_empty() {
+        combo.set_active(Some(default_idx as u32));
     }
 }
 

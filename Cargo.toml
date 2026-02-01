@@ -1,6 +1,6 @@
 [package]
 name = "android-webcam"
-version = "1.0.1"
+version = "1.0.2"
 authors = ["Broly <jack_sparrow_xv@proton.me>"]
 edition = "2021"
 description = "Use Android device as a webcam via scrcpy and v4l2loopback"
@@ -12,10 +12,10 @@ gtk4 = "0.7.3"
 [package.metadata.deb]
 maintainer = "Broly <jack_sparrow_xv@proton.me>"
 copyright = "2026, Broly"
-depends = "adb, scrcpy, v4l2loopback-dkms, v4l2loopback-utils, libgtk-4-1"
+depends = "$auto, adb, scrcpy, v4l2loopback-dkms, v4l2loopback-utils, libgtk-4-1"
 section = "utils"
 priority = "optional"
-revision = "2"
+revision = "1"
 maintainer-scripts = "debian-configs/"
 assets = [
     ["target/release/android-webcam", "/usr/bin/android-webcam", "755"],

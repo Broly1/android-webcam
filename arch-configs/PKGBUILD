@@ -1,6 +1,6 @@
 # Maintainer: Broly <jack_sparrow_xv@proton.me>
 pkgname=android-webcam
-pkgver=1.0.1
+pkgver=1.0.2
 pkgrel=2
 pkgdesc="Use Android device as a webcam via scrcpy and v4l2loopback"
 arch=('x86_64')
