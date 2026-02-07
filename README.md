@@ -2,6 +2,9 @@
 
 [Portugues (Brasil)](README.pt-br.md) | English
 
+> [!TIP]
+> **For AppImage Builds:** **[Scrcpy-Webcam](https://github.com/Broly1/Scrcpy-Webcam)**
+
 Use your Android device as a high-quality webcam on Linux via `scrcpy` and `v4l2loopback`.
 
 ## 🛠️ Prerequisites
