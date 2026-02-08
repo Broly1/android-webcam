@@ -7,6 +7,12 @@
 
 Use your Android device as a high-quality webcam on Linux via `scrcpy` and `v4l2loopback`.
 
+## 📸 Screenshots
+
+| 1. Launch & Settings | 2. Mute Microphone | 3. Change resolution |
+| :---: | :---: | :---: |
+| [![Settings](https://raw.githubusercontent.com/Broly1/images/main/Screenshot_20260208_125817.png)](https://raw.githubusercontent.com/Broly1/images/main/Screenshot_20260208_125817.png) | [![Connection](https://raw.githubusercontent.com/Broly1/images/main/Screenshot_20260208_130007.png)](https://raw.githubusercontent.com/Broly1/images/main/Screenshot_20260208_130007.png) | [![Stream](https://raw.githubusercontent.com/Broly1/images/main/Screenshot_20260208_130919.png)](https://raw.githubusercontent.com/Broly1/images/main/Screenshot_20260208_130919.png) |
+
 ## 🛠️ Prerequisites
 
 Before installing or building, ensure your system has the necessary drivers and tools:
