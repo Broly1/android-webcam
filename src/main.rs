@@ -130,9 +130,9 @@ fn build_ui(app: &Application) {
             let _ = Command::new("adb").args(["shell", "am", "force-stop", "com.genymobile.scrcpy"]).status();
             thread::sleep(Duration::from_millis(500));
 
-            if !Path::new("/dev/video128").exists() {
+            if !Path::new("/dev/video9").exists() {
                 let _ = Command::new("pkexec")
-                .args(["modprobe", "v4l2loopback", "video_nr=128", "card_label=Android-Webcam", "exclusive_caps=1"])
+                .args(["modprobe", "v4l2loopback", "video_nr=9", "card_label=Android-Webcam", "exclusive_caps=1"])
                 .status();
             }
 
@@ -256,7 +256,7 @@ fn run_scrcpy(fps: String, facing: String, block_mic: bool, res: String) -> Opti
         format!("--camera-facing={}", facing),
             format!("--camera-size={}", res),
                 format!("--camera-fps={}", fps),
-                    "--v4l2-sink=/dev/video128".into(),
+                    "--v4l2-sink=/dev/video9".into(),
                     "--v4l2-buffer=0".into(),
     ];
 
