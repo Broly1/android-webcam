@@ -72,7 +72,7 @@ sudo update-initramfs -u
 
 ```bash
 echo "v4l2loopback" | sudo tee /etc/modules-load.d/v4l2loopback.conf
-echo "options v4l2loopback devices=1 video_nr=128 card_label='Android-Webcam' exclusive_caps=1" | sudo tee /etc/modprobe.d/v4l2loopback.conf
+echo "options v4l2loopback devices=1 video_nr=9 card_label='Android-Webcam' exclusive_caps=1" | sudo tee /etc/modprobe.d/v4l2loopback.conf
 sudo mkinitcpio -P
 
 ```
