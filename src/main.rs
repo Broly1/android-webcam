@@ -109,8 +109,22 @@ enum AppEvent {
     },
 }
 
+/// Settings of the running stream, kept so it can be relaunched at a lower resolution.
+#[derive(Clone)]
+struct LaunchParams {
+    serial: Option<String>,
+    fps: String,
+    facing: String,
+    block_mic: bool,
+    res: String,
+}
+
+const APP_ID: &str = "com.android.webcam";
+const APP_ICON_PATH: &str = "/usr/share/icons/hicolor/256x256/apps/android-webcam.png";
+
 struct AppState {
     current_process: Option<Child>,
+    current_launch: Option<LaunchParams>,
     active_serial: Option<String>,
     devices: Vec<DeviceInfo>,
 }
@@ -120,7 +134,7 @@ fn main() {
     env::set_var("GDK_BACKEND", "wayland,x11,*");
 
     let app = Application::builder()
-        .application_id("com.android.webcam")
+        .application_id(APP_ID)
         .build();
     app.connect_activate(build_ui);
     app.run();
@@ -139,6 +153,7 @@ fn build_ui(app: &Application) {
     let config = Arc::new(Mutex::new(load_config()));
     let state = Arc::new(Mutex::new(AppState {
         current_process: None,
+        current_launch: None,
         active_serial: None,
         devices: Vec::new(),
     }));
@@ -714,6 +729,13 @@ fn build_ui(app: &Application) {
             let serial = serial_clone.as_deref();
             if let Some(child) = run_scrcpy(serial, fps.to_string(), facing.to_string(), mic_blocked, res.to_string()) {
                 s.current_process = Some(child);
+                s.current_launch = Some(LaunchParams {
+                    serial: serial_clone.clone(),
+                    fps: fps.to_string(),
+                    facing: facing.to_string(),
+                    block_mic: mic_blocked,
+                    res: res.to_string(),
+                });
                 let mic_txt = if mic_blocked { " (Mic Off)" } else { " (Mic On)" };
                 let mode_txt = if let Some(ser) = serial {
                     if ser.contains(':') { " [Wi-Fi]" } else { " [USB]" }
@@ -757,6 +779,69 @@ fn build_ui(app: &Application) {
         }
         glib::Propagation::Proceed
     }));
+
+    // Crash watchdog: if scrcpy exits on its own (e.g. the phone can't encode 4K), relaunch it
+    // at 1080p, then 720p. A user Stop takes current_process first, so it isn't seen as a crash.
+    glib::timeout_add_local(Duration::from_millis(500), glib::clone!(
+        @weak status_label, @weak res_combo, @strong state, @strong is_updating_res
+            => @default-return glib::ControlFlow::Break, move || {
+            let mut s = state.lock().unwrap();
+            let exit = match s.current_process.as_mut().map(|child| child.try_wait()) {
+                Some(Ok(Some(status))) => Some(status.success()),
+                Some(Err(_)) => Some(false),
+                _ => None,
+            };
+            let Some(clean_exit) = exit else { return glib::ControlFlow::Continue };
+            s.current_process = None;
+            let Some(launch) = s.current_launch.take() else { return glib::ControlFlow::Continue };
+
+            // Exit code 0 means the user closed the scrcpy window: that's a stop, not a crash.
+            if clean_exit {
+                status_label.set_text("Stopped (Ready)");
+                return glib::ControlFlow::Continue;
+            }
+
+            // Phone unplugged or disconnected: the device monitor handles that, don't retry.
+            if let Some(ser) = launch.serial.as_deref() {
+                let online = Command::new("adb")
+                    .args(["-s", ser, "get-state"])
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "device")
+                    .unwrap_or(false);
+                if !online {
+                    return glib::ControlFlow::Continue;
+                }
+            }
+
+            let Some(fallback) = next_fallback_resolution(&launch.res) else {
+                status_label.set_markup(&format!(
+                    "<span foreground='red'>● Stream crashed at {}. Try another resolution or camera.</span>",
+                    launch.res
+                ));
+                return glib::ControlFlow::Continue;
+            };
+
+            let retry = LaunchParams { res: fallback.to_string(), ..launch.clone() };
+            match run_scrcpy(retry.serial.as_deref(), retry.fps.clone(), retry.facing.clone(), retry.block_mic, retry.res.clone()) {
+                Some(child) => {
+                    s.current_process = Some(child);
+                    s.current_launch = Some(retry);
+                    status_label.set_markup(&format!(
+                        "<span foreground='#ffa500'>⚠️ {} crashed on this phone, relaunched at {}</span>",
+                        launch.res, fallback
+                    ));
+                }
+                None => status_label.set_markup("<span foreground='red'>● Failed to Start</span>"),
+            }
+            drop(s);
+
+            // Show the resolution actually in use, without saving it as the preferred one.
+            is_updating_res.store(true, Ordering::SeqCst);
+            res_combo.set_active_id(Some(fallback));
+            is_updating_res.store(false, Ordering::SeqCst);
+            glib::ControlFlow::Continue
+        }
+    ));
 
     // Background ADB Device Detection Thread
     let tx_monitor = tx.clone();
@@ -818,6 +903,9 @@ fn build_ui(app: &Application) {
                             let selected = active.unwrap_or_else(|| devices[0].clone());
                             let serial_changed = s.active_serial.as_ref() != Some(&selected.serial);
                             s.active_serial = Some(selected.serial.clone());
+                            // Release before touching device_combo: set_active_id fires its
+                            // "changed" handler, which locks `state` again and would deadlock.
+                            drop(s);
 
                             // Populate device selector if multiple devices
                             if devices.len() > 1 {
@@ -1338,7 +1426,7 @@ fn refresh_resolutions(
     found_sizes.dedup();
 
     for s in &found_sizes {
-        combo.append_text(s);
+        combo.append(Some(s), s);
     }
 
     let target = preferred_res.unwrap_or("1920x1080");
@@ -1356,6 +1444,19 @@ fn refresh_resolutions(
     }
 
     is_updating.store(false, Ordering::SeqCst);
+}
+
+/// Next resolution to try after a crash: anything above 1080p drops to 1080p, then 720p.
+pub fn next_fallback_resolution(res: &str) -> Option<&'static str> {
+    let (w, h) = res.split_once('x')?;
+    let (w, h): (u32, u32) = (w.trim().parse().ok()?, h.trim().parse().ok()?);
+    if w > 1920 || h > 1080 {
+        Some("1920x1080")
+    } else if w > 1280 || h > 720 {
+        Some("1280x720")
+    } else {
+        None
+    }
 }
 
 fn run_scrcpy(
@@ -1388,8 +1489,14 @@ fn run_scrcpy(
         args.push("--audio-output-buffer=50".into());
     }
 
-    Command::new("scrcpy")
-        .args(&args)
+    let mut cmd = Command::new("scrcpy");
+    // Give the scrcpy window our app id so the taskbar groups it under our icon instead of
+    // showing a separate scrcpy entry (SDL3 uses this for the Wayland app_id / X11 WM_CLASS).
+    cmd.env("SDL_APP_ID", APP_ID);
+    if Path::new(APP_ICON_PATH).exists() {
+        cmd.env("SCRCPY_ICON_PATH", APP_ICON_PATH);
+    }
+    cmd.args(&args)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -1490,6 +1597,16 @@ mod tests {
         assert_eq!(a.len(), 10);
         assert!(a.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_next_fallback_resolution() {
+        assert_eq!(next_fallback_resolution("3840x2160"), Some("1920x1080"));
+        assert_eq!(next_fallback_resolution("2560x1440"), Some("1920x1080"));
+        assert_eq!(next_fallback_resolution("1920x1080"), Some("1280x720"));
+        assert_eq!(next_fallback_resolution("1280x720"), None);
+        assert_eq!(next_fallback_resolution("720x480"), None);
+        assert_eq!(next_fallback_resolution("bogus"), None);
     }
 
     #[test]
