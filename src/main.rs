@@ -8,9 +8,10 @@ use mdns_sd::{RecvTimeoutError, ServiceDaemon, ServiceEvent};
 use qrcode::QrCode;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::env;
 use std::fs;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -112,7 +113,7 @@ enum AppEvent {
     },
 }
 
-/// Settings of the running stream, kept so it can be relaunched at a lower resolution.
+/// Settings of the running stream, kept so it can be relaunched after a crash.
 #[derive(Clone)]
 struct LaunchParams {
     serial: Option<String>,
@@ -120,6 +121,23 @@ struct LaunchParams {
     facing: String,
     block_mic: bool,
     res: String,
+    /// Already relaunched once because the camera was busy.
+    busy_retried: bool,
+}
+
+/// Last lines scrcpy printed (its own log plus the phone server's), used to tell why it crashed.
+type ScrcpyOutput = Arc<Mutex<VecDeque<String>>>;
+const SCRCPY_OUTPUT_LINES: usize = 200;
+
+/// Why scrcpy exited, judged from its output.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CrashCause {
+    /// Another app (or a stream that hasn't shut down yet) holds the camera.
+    CameraBusy,
+    /// Camera privacy toggle or device policy.
+    CameraBlocked,
+    /// Anything else, most likely the phone can't encode this resolution.
+    Other,
 }
 
 const APP_ID: &str = "com.android.webcam";
@@ -128,6 +146,7 @@ const APP_ICON_PATH: &str = "/usr/share/icons/hicolor/256x256/apps/android-webca
 struct AppState {
     current_process: Option<Child>,
     current_launch: Option<LaunchParams>,
+    current_output: ScrcpyOutput,
     active_serial: Option<String>,
     devices: Vec<DeviceInfo>,
 }
@@ -157,6 +176,7 @@ fn build_ui(app: &Application) {
     let state = Arc::new(Mutex::new(AppState {
         current_process: None,
         current_launch: None,
+        current_output: ScrcpyOutput::default(),
         active_serial: None,
         devices: Vec::new(),
     }));
@@ -677,10 +697,7 @@ fn build_ui(app: &Application) {
         @strong state, @weak wifi_action_status, @weak status_label => move |_| {
             let active_serial = {
                 let mut s = state.lock().unwrap();
-                if let Some(mut child) = s.current_process.take() {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                }
+                stop_stream(&mut s);
                 status_label.set_text(tr("status.stopped"));
                 s.active_serial.clone()
             };
@@ -698,17 +715,7 @@ fn build_ui(app: &Application) {
         @weak facing_dropdown, @weak res_combo, @weak fps_dropdown, @weak mic_check, @weak status_label, @strong state, @strong config => move || {
             let mut s = state.lock().unwrap();
 
-            if let Some(mut child) = s.current_process.take() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-
-            kill_scrcpy();
-            if let Some(ref ser) = s.active_serial {
-                let _ = Command::new("adb").args(["-s", ser, "shell", "am", "force-stop", "com.genymobile.scrcpy"]).status();
-            } else {
-                let _ = Command::new("adb").args(["shell", "am", "force-stop", "com.genymobile.scrcpy"]).status();
-            }
+            stop_stream(&mut s);
             thread::sleep(Duration::from_millis(500));
 
             if !Path::new("/dev/video9").exists() {
@@ -722,32 +729,35 @@ fn build_ui(app: &Application) {
             let fps = if fps_dropdown.selected() == 1 { "60" } else { "30" };
             let mic_blocked = mic_check.is_active();
 
-            // Save settings automatically on Launch
+            // Save settings automatically on Launch. Not the resolution: picking one in the combo
+            // already saves it, and the combo may be showing a crash fallback or a substitute for
+            // a preferred size this phone lacks, neither of which should replace the preference.
             {
                 let mut cfg = config.lock().unwrap();
                 cfg.camera_facing = facing_dropdown.selected();
-                cfg.resolution = res.clone();
                 cfg.fps_index = fps_dropdown.selected();
                 cfg.block_mic = mic_blocked;
                 save_config(&cfg);
             }
 
-            let serial_clone = s.active_serial.clone();
-            let serial = serial_clone.as_deref();
-            if let Some(child) = run_scrcpy(serial, fps.to_string(), facing.to_string(), mic_blocked, res.to_string()) {
-                s.current_process = Some(child);
-                s.current_launch = Some(LaunchParams {
-                    serial: serial_clone.clone(),
-                    fps: fps.to_string(),
-                    facing: facing.to_string(),
-                    block_mic: mic_blocked,
-                    res: res.to_string(),
-                });
+            let launch = LaunchParams {
+                serial: s.active_serial.clone(),
+                fps: fps.to_string(),
+                facing: facing.to_string(),
+                block_mic: mic_blocked,
+                res,
+                busy_retried: false,
+            };
+            let serial = launch.serial.as_deref();
+            if let Some((child, output)) = run_scrcpy(&launch) {
                 let mic_txt = if mic_blocked { tr("status.mic_off") } else { tr("status.mic_on") };
                 let mode_txt = if let Some(ser) = serial {
                     if ser.contains(':') { " [Wi-Fi]" } else { " [USB]" }
                 } else { "" };
                 status_label.set_markup(&format!("<span foreground='green'>{}{} {}</span>", esc(tr("status.active")), mode_txt, esc(mic_txt)));
+                s.current_process = Some(child);
+                s.current_output = output;
+                s.current_launch = Some(launch);
             } else {
                 status_label.set_markup(&format!("<span foreground='red'>{}</span>", esc(tr("status.failed"))));
             }
@@ -760,14 +770,7 @@ fn build_ui(app: &Application) {
     // Stop button
     stop_btn.connect_clicked(glib::clone!(@strong state, @weak status_label => move |_| {
         if let Ok(mut s) = state.lock() {
-            if let Some(mut child) = s.current_process.take() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-            kill_scrcpy();
-            if let Some(ref ser) = s.active_serial {
-                let _ = Command::new("adb").args(["-s", ser, "shell", "am", "force-stop", "com.genymobile.scrcpy"]).status();
-            }
+            stop_stream(&mut s);
             status_label.set_text(tr("status.stopped"));
         }
     }));
@@ -775,20 +778,15 @@ fn build_ui(app: &Application) {
     // Clean exit on window close
     window.connect_close_request(glib::clone!(@strong state => move |_| {
         if let Ok(mut s) = state.lock() {
-            if let Some(mut child) = s.current_process.take() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-            kill_scrcpy();
-            if let Some(ref ser) = s.active_serial {
-                let _ = Command::new("adb").args(["-s", ser, "shell", "am", "force-stop", "com.genymobile.scrcpy"]).status();
-            }
+            stop_stream(&mut s);
         }
         glib::Propagation::Proceed
     }));
 
-    // Crash watchdog: if scrcpy exits on its own (e.g. the phone can't encode 4K), relaunch it
-    // at 1080p, then 720p. A user Stop takes current_process first, so it isn't seen as a crash.
+    // Crash watchdog: if scrcpy exits on its own, find out why from its output. A busy camera
+    // gets one retry at the same resolution; anything else that isn't a camera error (e.g. the
+    // phone can't encode 4K) relaunches at 1080p, then 720p. A user Stop takes current_process
+    // first, so it isn't seen as a crash.
     glib::timeout_add_local(Duration::from_millis(500), glib::clone!(
         @weak status_label, @weak res_combo, @strong state, @strong is_updating_res
             => @default-return glib::ControlFlow::Break, move || {
@@ -820,31 +818,50 @@ fn build_ui(app: &Application) {
                 }
             }
 
-            let Some(fallback) = next_fallback_resolution(&launch.res) else {
-                status_label.set_markup(&format!(
-                    "<span foreground='red'>{}</span>",
-                    esc(&trf("status.crashed", &[("res", &launch.res)]))
-                ));
-                return glib::ControlFlow::Continue;
+            let output = s.current_output.lock().unwrap().iter().cloned().collect::<Vec<_>>().join("\n");
+            let fail = |msg: &str| status_label.set_markup(&format!("<span foreground='red'>{}</span>", esc(msg)));
+
+            let (retry, notice) = match crash_cause(&output) {
+                CrashCause::CameraBlocked => {
+                    fail(tr("status.camera_blocked"));
+                    return glib::ControlFlow::Continue;
+                }
+                CrashCause::CameraBusy if launch.busy_retried => {
+                    fail(tr("status.camera_busy"));
+                    return glib::ControlFlow::Continue;
+                }
+                CrashCause::CameraBusy => {
+                    // Often our own previous server still holding the camera: make sure it's gone.
+                    stop_phone_server(launch.serial.as_deref());
+                    (LaunchParams { busy_retried: true, ..launch.clone() }, tr("status.camera_busy_retry").to_string())
+                }
+                CrashCause::Other => {
+                    let Some(fallback) = next_fallback_resolution(&launch.res) else {
+                        fail(&trf("status.crashed", &[("res", &launch.res)]));
+                        return glib::ControlFlow::Continue;
+                    };
+                    let notice = trf("status.relaunched", &[("res", &launch.res), ("fallback", fallback)]);
+                    (LaunchParams { res: fallback.to_string(), ..launch.clone() }, notice)
+                }
             };
 
-            let retry = LaunchParams { res: fallback.to_string(), ..launch.clone() };
-            match run_scrcpy(retry.serial.as_deref(), retry.fps.clone(), retry.facing.clone(), retry.block_mic, retry.res.clone()) {
-                Some(child) => {
+            let fallback = (retry.res != launch.res).then(|| retry.res.clone());
+            match run_scrcpy(&retry) {
+                Some((child, output)) => {
                     s.current_process = Some(child);
+                    s.current_output = output;
                     s.current_launch = Some(retry);
-                    status_label.set_markup(&format!(
-                        "<span foreground='#ffa500'>{}</span>",
-                        esc(&trf("status.relaunched", &[("res", &launch.res), ("fallback", fallback)]))
-                    ));
+                    status_label.set_markup(&format!("<span foreground='#ffa500'>{}</span>", esc(&notice)));
                 }
-                None => status_label.set_markup(&format!("<span foreground='red'>{}</span>", esc(tr("status.failed")))),
+                None => fail(tr("status.failed")),
             }
             drop(s);
 
+            let Some(fallback) = fallback else { return glib::ControlFlow::Continue };
+
             // Show the resolution actually in use, without saving it as the preferred one.
             is_updating_res.store(true, Ordering::SeqCst);
-            res_combo.set_active_id(Some(fallback));
+            res_combo.set_active_id(Some(&fallback));
             is_updating_res.store(false, Ordering::SeqCst);
             glib::ControlFlow::Continue
         }
@@ -1460,29 +1477,64 @@ pub fn next_fallback_resolution(res: &str) -> Option<&'static str> {
     }
 }
 
-fn run_scrcpy(
-    serial: Option<&str>,
-    fps: String,
-    facing: String,
-    block_mic: bool,
-    res: String,
-) -> Option<Child> {
+/// Tells from scrcpy's output why it exited. Matches Android's CameraAccessException messages
+/// (and the camera service's log text), which the phone server prints before closing.
+pub fn crash_cause(output: &str) -> CrashCause {
+    const BUSY: &[&str] = &[
+        "too many cameras already open",
+        "limit for number of open cameras",
+        "higher-priority client using camera",
+        "camera device is in use",
+        "camera_in_use",
+        "max_cameras_in_use",
+    ];
+    const BLOCKED: &[&str] = &[
+        "camera is disabled",
+        "camera_disabled",
+        "disabled due to a device policy",
+        "sensor privacy",
+    ];
+    let out = output.to_lowercase();
+    if BUSY.iter().any(|p| out.contains(p)) {
+        CrashCause::CameraBusy
+    } else if BLOCKED.iter().any(|p| out.contains(p)) {
+        CrashCause::CameraBlocked
+    } else {
+        CrashCause::Other
+    }
+}
+
+/// Keeps the last SCRCPY_OUTPUT_LINES lines of `r`. Also keeps the pipe drained so scrcpy never
+/// blocks on a full buffer.
+fn collect_output(r: impl Read + Send + 'static, output: ScrcpyOutput) {
+    thread::spawn(move || {
+        for line in BufReader::new(r).lines().map_while(Result::ok) {
+            let mut out = output.lock().unwrap();
+            if out.len() >= SCRCPY_OUTPUT_LINES {
+                out.pop_front();
+            }
+            out.push_back(line);
+        }
+    });
+}
+
+fn run_scrcpy(launch: &LaunchParams) -> Option<(Child, ScrcpyOutput)> {
     let mut args = vec![
         "--video-source=camera".into(),
-        format!("--camera-facing={}", facing),
-        format!("--camera-size={}", res),
-        format!("--camera-fps={}", fps),
+        format!("--camera-facing={}", launch.facing),
+        format!("--camera-size={}", launch.res),
+        format!("--camera-fps={}", launch.fps),
         "--v4l2-sink=/dev/video9".into(),
         "--v4l2-buffer=0".into(),
     ];
 
-    if let Some(s) = serial {
+    if let Some(s) = launch.serial.as_deref() {
         if !s.is_empty() {
             args.push(format!("--serial={}", s));
         }
     }
 
-    if block_mic {
+    if launch.block_mic {
         args.push("--no-audio".into());
     } else {
         args.push("--audio-source=mic".into());
@@ -1497,11 +1549,53 @@ fn run_scrcpy(
     if Path::new(APP_ICON_PATH).exists() {
         cmd.env("SCRCPY_ICON_PATH", APP_ICON_PATH);
     }
-    cmd.args(&args)
+    let mut child = cmd
+        .args(&args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+    // stdout carries the phone server's log (where camera errors appear), stderr the client's.
+    let output = ScrcpyOutput::default();
+    if let Some(out) = child.stdout.take() {
+        collect_output(out, output.clone());
+    }
+    if let Some(err) = child.stderr.take() {
+        collect_output(err, output.clone());
+    }
+    Some((child, output))
+}
+
+/// Stops the running stream: the scrcpy client here and its server on the phone.
+fn stop_stream(s: &mut AppState) {
+    if let Some(mut child) = s.current_process.take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    s.current_launch = None;
+    kill_scrcpy();
+    stop_phone_server(s.active_serial.as_deref());
+}
+
+/// Kills scrcpy's server on the phone and waits (up to 2 s) for it to exit, so the camera is
+/// free for the next launch. The server runs as the shell user through app_process, not as an
+/// app, so `am force-stop` can't reach it. `[c]om` keeps the pattern from matching the
+/// `sh -c` running this very command.
+fn stop_phone_server(serial: Option<&str>) {
+    const PATTERN: &str = "'[c]om.genymobile.scrcpy.Server'";
+    let script = format!(
+        "pkill -f {p}; for i in 1 2 3 4 5 6 7 8 9 10; do pgrep -f {p} >/dev/null || break; sleep 0.2; done",
+        p = PATTERN
+    );
+    let mut cmd = Command::new("adb");
+    if let Some(s) = serial {
+        cmd.args(["-s", s]);
+    }
+    let _ = cmd
+        .args(["shell", &script])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
-        .ok()
+        .status();
 }
 
 /// Text interpolated into Pango markup must be escaped, or '&', '<' etc. break parsing.
@@ -1598,6 +1692,31 @@ mod tests {
         assert_eq!(a.len(), 10);
         assert!(a.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_crash_cause() {
+        // Seen on a Pixel 8 Pro when another camera client was open.
+        let busy = "[server] ERROR: Video encoding error\njava.io.IOException: android.hardware.camera2.CameraAccessException: The system-wide limit for number of open cameras has been reached, and more camera devices cannot be opened until previous instances are closed.\nERROR: Demuxer error";
+        assert_eq!(crash_cause(busy), CrashCause::CameraBusy);
+        assert_eq!(
+            crash_cause("CameraAccessException: CAMERA_IN_USE (4): The camera device is in use already"),
+            CrashCause::CameraBusy
+        );
+        // Android 17 camera service, when a foreground app holds the camera.
+        assert_eq!(
+            crash_cause("connectHelper:2628: Higher-priority client using camera, ID \"0\" currently unavailable"),
+            CrashCause::CameraBusy
+        );
+        assert_eq!(
+            crash_cause("CameraAccessException: The camera is disabled due to a device policy, and cannot be opened."),
+            CrashCause::CameraBlocked
+        );
+        assert_eq!(
+            crash_cause("[server] ERROR: Encoding error: android.media.MediaCodec$CodecException: Error 0xfffffc0e"),
+            CrashCause::Other
+        );
+        assert_eq!(crash_cause(""), CrashCause::Other);
     }
 
     #[test]
