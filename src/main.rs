@@ -20,6 +20,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+mod i18n;
+use i18n::{fill, tr, trf};
+
 const ADB_PAIRING_SERVICE: &str = "_adb-tls-pairing._tcp.local.";
 const ADB_CONNECT_SERVICE: &str = "_adb-tls-connect._tcp.local.";
 const QR_PAIR_TIMEOUT: Duration = Duration::from_secs(120);
@@ -143,7 +146,7 @@ fn main() {
 fn build_ui(app: &Application) {
     let window = ApplicationWindow::builder()
         .application(app)
-        .title("Android Webcam")
+        .title(tr("app.title"))
         .default_width(380)
         .default_height(600)
         .build();
@@ -186,12 +189,12 @@ fn build_ui(app: &Application) {
     wifi_actions_box.set_homogeneous(true);
 
     let switch_wifi_btn = Button::builder()
-        .label("📶 Switch to Wi-Fi")
-        .tooltip_text("Enable TCP/IP mode and connect wirelessly")
+        .label(tr("wifi.switch"))
+        .tooltip_text(tr("wifi.switch_tooltip"))
         .build();
 
     let disconnect_wifi_btn = Button::builder()
-        .label("🔌 Disconnect Wi-Fi")
+        .label(tr("wifi.disconnect"))
         .css_classes(["destructive-action"])
         .build();
     disconnect_wifi_btn.set_visible(false);
@@ -205,7 +208,7 @@ fn build_ui(app: &Application) {
         .wrap(true)
         .build();
 
-    let facing_dropdown = DropDown::from_strings(&["Back Camera", "Front Camera"]);
+    let facing_dropdown = DropDown::from_strings(&[tr("camera.back"), tr("camera.front")]);
     facing_dropdown.set_selected(config.lock().unwrap().camera_facing);
 
     let camera_warning = Label::builder()
@@ -214,9 +217,10 @@ fn build_ui(app: &Application) {
         .build();
 
     if config.lock().unwrap().camera_facing == 1 {
-        camera_warning.set_markup(
-            "<span foreground='#ffa500' size='small'>⚠️ Note: Back camera usually has better resolution</span>",
-        );
+        camera_warning.set_markup(&format!(
+            "<span foreground='#ffa500' size='small'>{}</span>",
+            esc(tr("camera.front_warning"))
+        ));
     }
 
     let res_combo = ComboBoxText::new();
@@ -230,23 +234,23 @@ fn build_ui(app: &Application) {
     let fps_dropdown = DropDown::from_strings(&["30", "60"]);
     fps_dropdown.set_selected(config.lock().unwrap().fps_index);
 
-    let mic_check = CheckButton::with_label("Block Phone Microphone");
+    let mic_check = CheckButton::with_label(tr("mic.block"));
     mic_check.set_active(config.lock().unwrap().block_mic);
 
     let save_defaults_btn = Button::builder()
-        .label("💾 Save Current as Default")
-        .tooltip_text("Store current selections as the startup defaults")
+        .label(tr("defaults.save"))
+        .tooltip_text(tr("defaults.save_tooltip"))
         .build();
 
     let button_box = Box::new(Orientation::Horizontal, 10);
     button_box.set_homogeneous(true);
 
     let start_btn = Button::builder()
-        .label("🚀 Launch / Update")
+        .label(tr("stream.launch"))
         .css_classes(["suggested-action"])
         .build();
     let stop_btn = Button::builder()
-        .label("🛑 Stop")
+        .label(tr("stream.stop"))
         .css_classes(["destructive-action"])
         .build();
 
@@ -254,7 +258,7 @@ fn build_ui(app: &Application) {
     button_box.append(&stop_btn);
 
     let status_label = Label::builder()
-        .label("Ready")
+        .label(tr("status.ready"))
         .css_classes(["caption"])
         .wrap(true)
         .halign(gtk4::Align::Center)
@@ -268,7 +272,7 @@ fn build_ui(app: &Application) {
 
     controls_box.append(
         &Label::builder()
-            .label("Camera Selection:")
+            .label(tr("camera.label"))
             .halign(gtk4::Align::Start)
             .build(),
     );
@@ -277,7 +281,7 @@ fn build_ui(app: &Application) {
 
     controls_box.append(
         &Label::builder()
-            .label("Resolution:")
+            .label(tr("resolution.label"))
             .halign(gtk4::Align::Start)
             .build(),
     );
@@ -286,7 +290,7 @@ fn build_ui(app: &Application) {
 
     controls_box.append(
         &Label::builder()
-            .label("FPS Limit:")
+            .label(tr("fps.label"))
             .halign(gtk4::Align::Start)
             .build(),
     );
@@ -315,31 +319,31 @@ fn build_ui(app: &Application) {
         .build();
     let wait_title = Label::builder()
         .use_markup(true)
-        .label("<b>Waiting for Android Device...</b>")
+        .label(format!("<b>{}</b>", esc(tr("waiting.title"))))
         .build();
     let wait_hint = Label::builder()
         .use_markup(true)
         .wrap(true)
         .justify(gtk4::Justification::Center)
-        .label("<span size='small' foreground='gray'>Connect your phone via USB with USB Debugging enabled, or connect wirelessly over Wi-Fi below:</span>")
+        .label(format!("<span size='small' foreground='gray'>{}</span>", esc(tr("waiting.hint"))))
         .build();
 
     let wifi_frame = Box::new(Orientation::Vertical, 8);
     let wifi_title = Label::builder()
         .use_markup(true)
         .halign(gtk4::Align::Start)
-        .label("<b>📶 Connect Wirelessly</b>")
+        .label(format!("<b>{}</b>", esc(tr("waiting.wireless_title"))))
         .build();
 
     let wifi_entry_box = Box::new(Orientation::Horizontal, 8);
     let initial_ip = config.lock().unwrap().wireless_ip.clone();
     let ip_entry = Entry::builder()
-        .placeholder_text("IP address (e.g. 192.168.1.50:5555)")
+        .placeholder_text(tr("waiting.ip_placeholder"))
         .hexpand(true)
         .text(&initial_ip)
         .build();
     let connect_btn = Button::builder()
-        .label("Connect")
+        .label(tr("waiting.connect"))
         .css_classes(["suggested-action"])
         .build();
 
@@ -353,15 +357,15 @@ fn build_ui(app: &Application) {
         .build();
 
     let qr_pair_btn = Button::builder()
-        .label("📷 Pair with QR Code (Android 11+)")
-        .tooltip_text("Pair and connect using Wireless Debugging, no USB cable needed")
+        .label(tr("waiting.qr_button"))
+        .tooltip_text(tr("waiting.qr_tooltip"))
         .build();
 
     let wifi_note = Label::builder()
         .use_markup(true)
         .wrap(true)
         .justify(gtk4::Justification::Center)
-        .label("<span size='x-small' foreground='gray'>Tip: Device and PC must be on the same Wi-Fi. Requires initial USB setup or Android 11+ Wireless Debugging.</span>")
+        .label(format!("<span size='x-small' foreground='gray'>{}</span>", esc(tr("waiting.tip"))))
         .build();
 
     wifi_frame.append(&wifi_title);
@@ -380,7 +384,7 @@ fn build_ui(app: &Application) {
     // QR PAIRING DIALOG (Android 11+ Wireless Debugging)
     // ==========================================
     let qr_window = Window::builder()
-        .title("Pair with QR Code")
+        .title(tr("qr.title"))
         .transient_for(&window)
         .modal(true)
         .hide_on_close(true)
@@ -396,7 +400,10 @@ fn build_ui(app: &Application) {
         .wrap(true)
         .justify(gtk4::Justification::Center)
         .max_width_chars(36)
-        .label("On your phone open <b>Developer options → Wireless debugging → Pair device with QR code</b> and scan this code.")
+        .label(fill(
+            &esc(tr("qr.steps")),
+            &[("path", &format!("<b>{}</b>", esc(tr("qr.steps_path"))))],
+        ))
         .build();
 
     let qr_code: Rc<RefCell<Option<QrCode>>> = Rc::new(RefCell::new(None));
@@ -421,10 +428,10 @@ fn build_ui(app: &Application) {
         .wrap(true)
         .justify(gtk4::Justification::Center)
         .max_width_chars(40)
-        .label("<span size='x-small' foreground='gray'>Phone and PC must be on the same Wi-Fi. Discovery uses mDNS (UDP port 5353), so allow it in your firewall.</span>")
+        .label(format!("<span size='x-small' foreground='gray'>{}</span>", esc(tr("qr.note"))))
         .build();
 
-    let qr_close_btn = Button::builder().label("Close").build();
+    let qr_close_btn = Button::builder().label(tr("qr.close")).build();
 
     qr_box.append(&qr_steps);
     qr_box.append(&qr_area);
@@ -448,7 +455,7 @@ fn build_ui(app: &Application) {
     facing_dropdown.connect_selected_notify(glib::clone!(
         @weak res_combo, @weak camera_warning, @strong config, @strong state, @strong is_updating_res => move |dd| {
             let facing = if dd.selected() == 1 {
-                camera_warning.set_markup("<span foreground='#ffa500' size='small'>⚠️ Note: Back camera usually has better resolution</span>");
+                camera_warning.set_markup(&format!("<span foreground='#ffa500' size='small'>{}</span>", esc(tr("camera.front_warning"))));
                 "front"
             } else {
                 camera_warning.set_text("");
@@ -475,7 +482,7 @@ fn build_ui(app: &Application) {
                 if let Some(width_str) = res_s.split('x').next() {
                     if let Ok(width) = width_str.parse::<u32>() {
                         if width > 1920 {
-                            warning_label.set_markup("<span foreground='#ffa500' size='small'>⚠️ High resolution/FPS may cause phone to overheat</span>");
+                            warning_label.set_markup(&format!("<span foreground='#ffa500' size='small'>{}</span>", esc(tr("resolution.high_warning"))));
                         } else {
                             warning_label.set_text("");
                         }
@@ -521,7 +528,7 @@ fn build_ui(app: &Application) {
                 cfg.block_mic = mic_blocked;
                 save_config(&cfg);
             }
-            status_label.set_markup("<span foreground='#3584e4'><b>✓ Current settings saved as default!</b></span>");
+            status_label.set_markup(&format!("<span foreground='#3584e4'><b>{}</b></span>", esc(tr("defaults.saved"))));
         }
     ));
 
@@ -543,7 +550,7 @@ fn build_ui(app: &Application) {
                 } else {
                     "<span foreground='#2ec27e'>[USB]</span>".to_string()
                 };
-                device_label.set_markup(&format!("<b>Device:</b> {} {}", esc(&model), badge));
+                device_label.set_markup(&format!("<b>{}</b> {} {}", esc(tr("device.label")), esc(&model), badge));
 
                 let facing = if facing_dropdown.selected() == 1 { "front" } else { "back" };
                 let pref_res = config.lock().unwrap().resolution.clone();
@@ -557,18 +564,18 @@ fn build_ui(app: &Application) {
         @strong tx, @weak ip_entry, @weak connect_btn, @weak wifi_status_label => move || {
             let ip_text = ip_entry.text().trim().to_string();
             if ip_text.is_empty() {
-                wifi_status_label.set_markup("<span foreground='#ffa500'>Please enter an IP address.</span>");
+                wifi_status_label.set_markup(&format!("<span foreground='#ffa500'>{}</span>", esc(tr("waiting.enter_ip"))));
                 return;
             }
             connect_btn.set_sensitive(false);
-            wifi_status_label.set_markup("<span foreground='#3584e4'>🔄 Connecting...</span>");
+            wifi_status_label.set_markup(&format!("<span foreground='#3584e4'>{}</span>", esc(tr("waiting.connecting"))));
             let tx_clone = tx.clone();
             thread::spawn(move || {
                 match adb_connect_wireless(&ip_text) {
                     Ok(connected_addr) => {
                         let _ = tx_clone.send(AppEvent::WirelessConnectStatus {
                             success: true,
-                            message: format!("<span foreground='green'>✓ Connected to {}!</span>", connected_addr),
+                            message: format!("<span foreground='green'>{}</span>", esc(&trf("connect.success", &[("addr", &connected_addr)]))),
                             ip: Some(connected_addr),
                         });
                     }
@@ -598,7 +605,7 @@ fn build_ui(app: &Application) {
 
             *qr_code.borrow_mut() = QrCode::new(adb_qr_payload(&name, &password)).ok();
             qr_area.queue_draw();
-            qr_status_label.set_markup("<span foreground='#3584e4'>🔄 Waiting for the phone to scan...</span>");
+            qr_status_label.set_markup(&format!("<span foreground='#3584e4'>{}</span>", esc(tr("qr.waiting_scan"))));
             qr_window.present();
 
             let tx_clone = tx.clone();
@@ -615,7 +622,7 @@ fn build_ui(app: &Application) {
                 );
                 match result {
                     Ok(addr) => send(
-                        format!("<span foreground='green'>✓ Connected to {}!</span>", esc(&addr)),
+                        format!("<span foreground='green'>{}</span>", esc(&trf("connect.success", &[("addr", &addr)]))),
                         true,
                         Some(addr),
                     ),
@@ -641,14 +648,14 @@ fn build_ui(app: &Application) {
             };
             if let Some(serial) = active_serial {
                 switch_wifi_btn.set_sensitive(false);
-                wifi_action_status.set_markup("<span foreground='#3584e4'>🔄 Detecting IP &amp; switching to Wi-Fi...</span>");
+                wifi_action_status.set_markup(&format!("<span foreground='#3584e4'>{}</span>", esc(tr("wifi.switching"))));
                 let tx_clone = tx.clone();
                 thread::spawn(move || {
                     match switch_device_to_wifi(&serial) {
                         Ok(ip_port) => {
                             let _ = tx_clone.send(AppEvent::SwitchToWirelessStatus {
                                 success: true,
-                                message: format!("<span foreground='green'>✓ Connected to {}! You can unplug USB.</span>", ip_port),
+                                message: format!("<span foreground='green'>{}</span>", esc(&trf("wifi.switched", &[("addr", &ip_port)]))),
                                 ip: Some(ip_port),
                             });
                         }
@@ -674,13 +681,13 @@ fn build_ui(app: &Application) {
                     let _ = child.kill();
                     let _ = child.wait();
                 }
-                status_label.set_text("Stopped (Ready)");
+                status_label.set_text(tr("status.stopped"));
                 s.active_serial.clone()
             };
             if let Some(serial) = active_serial {
                 if serial.contains(':') {
                     adb_disconnect(&serial);
-                    wifi_action_status.set_markup("<span foreground='gray'>Disconnected Wi-Fi device.</span>");
+                    wifi_action_status.set_markup(&format!("<span foreground='gray'>{}</span>", esc(tr("wifi.disconnected"))));
                 }
             }
         }
@@ -736,13 +743,13 @@ fn build_ui(app: &Application) {
                     block_mic: mic_blocked,
                     res: res.to_string(),
                 });
-                let mic_txt = if mic_blocked { " (Mic Off)" } else { " (Mic On)" };
+                let mic_txt = if mic_blocked { tr("status.mic_off") } else { tr("status.mic_on") };
                 let mode_txt = if let Some(ser) = serial {
                     if ser.contains(':') { " [Wi-Fi]" } else { " [USB]" }
                 } else { "" };
-                status_label.set_markup(&format!("<span foreground='green'>● Stream Active{}{}</span>", mode_txt, mic_txt));
+                status_label.set_markup(&format!("<span foreground='green'>{}{} {}</span>", esc(tr("status.active")), mode_txt, esc(mic_txt)));
             } else {
-                status_label.set_markup("<span foreground='red'>● Failed to Start</span>");
+                status_label.set_markup(&format!("<span foreground='red'>{}</span>", esc(tr("status.failed"))));
             }
         }
     );
@@ -761,7 +768,7 @@ fn build_ui(app: &Application) {
             if let Some(ref ser) = s.active_serial {
                 let _ = Command::new("adb").args(["-s", ser, "shell", "am", "force-stop", "com.genymobile.scrcpy"]).status();
             }
-            status_label.set_text("Stopped (Ready)");
+            status_label.set_text(tr("status.stopped"));
         }
     }));
 
@@ -797,7 +804,7 @@ fn build_ui(app: &Application) {
 
             // Exit code 0 means the user closed the scrcpy window: that's a stop, not a crash.
             if clean_exit {
-                status_label.set_text("Stopped (Ready)");
+                status_label.set_text(tr("status.stopped"));
                 return glib::ControlFlow::Continue;
             }
 
@@ -815,8 +822,8 @@ fn build_ui(app: &Application) {
 
             let Some(fallback) = next_fallback_resolution(&launch.res) else {
                 status_label.set_markup(&format!(
-                    "<span foreground='red'>● Stream crashed at {}. Try another resolution or camera.</span>",
-                    launch.res
+                    "<span foreground='red'>{}</span>",
+                    esc(&trf("status.crashed", &[("res", &launch.res)]))
                 ));
                 return glib::ControlFlow::Continue;
             };
@@ -827,11 +834,11 @@ fn build_ui(app: &Application) {
                     s.current_process = Some(child);
                     s.current_launch = Some(retry);
                     status_label.set_markup(&format!(
-                        "<span foreground='#ffa500'>⚠️ {} crashed on this phone, relaunched at {}</span>",
-                        launch.res, fallback
+                        "<span foreground='#ffa500'>{}</span>",
+                        esc(&trf("status.relaunched", &[("res", &launch.res), ("fallback", fallback)]))
                     ));
                 }
-                None => status_label.set_markup("<span foreground='red'>● Failed to Start</span>"),
+                None => status_label.set_markup(&format!("<span foreground='red'>{}</span>", esc(tr("status.failed")))),
             }
             drop(s);
 
@@ -891,7 +898,7 @@ fn build_ui(app: &Application) {
                             }
                             s.active_serial = None;
                             stack.set_visible_child_name("waiting");
-                            status_label.set_text("Stopped (Waiting for device)");
+                            status_label.set_text(tr("status.waiting_device"));
                         } else {
                             // Pick active device: keep previous if still present, otherwise choose first
                             let active = if let Some(ref current) = s.active_serial {
@@ -926,7 +933,7 @@ fn build_ui(app: &Application) {
                             } else {
                                 "<span foreground='#2ec27e'>[USB]</span>".to_string()
                             };
-                            device_label.set_markup(&format!("<b>Device:</b> {} {}", esc(&selected.model), badge));
+                            device_label.set_markup(&format!("<b>{}</b> {} {}", esc(tr("device.label")), esc(&selected.model), badge));
 
                             // Controls visibility
                             switch_wifi_btn.set_visible(!selected.is_wireless);
@@ -934,7 +941,7 @@ fn build_ui(app: &Application) {
 
                             if stack.visible_child_name().as_deref() != Some("controls") {
                                 stack.set_visible_child_name("controls");
-                                status_label.set_text("Stopped (Ready)");
+                                status_label.set_text(tr("status.stopped"));
                             }
 
                             // Refresh resolutions if device changed or combo is empty
@@ -1013,13 +1020,6 @@ pub fn parse_devices_text(text: &str) -> Vec<DeviceInfo> {
                     break;
                 }
             }
-            if model.is_empty() {
-                model = if is_wireless {
-                    format!("Wireless Device ({})", serial)
-                } else {
-                    format!("USB Device ({})", serial)
-                };
-            }
             devices.push(DeviceInfo {
                 serial,
                 model,
@@ -1037,16 +1037,17 @@ fn list_connected_devices() -> Vec<DeviceInfo> {
         let mut devices = parse_devices_text(&text);
         // Fallback for models if not populated by adb devices -l
         for d in &mut devices {
-            if d.model.starts_with("USB Device (") || d.model.starts_with("Wireless Device (") {
+            if d.model.is_empty() {
                 if let Ok(m_out) = Command::new("adb")
                     .args(["-s", &d.serial, "shell", "getprop", "ro.product.model"])
                     .output()
                 {
-                    let m = String::from_utf8_lossy(&m_out.stdout).trim().to_string();
-                    if !m.is_empty() {
-                        d.model = m;
-                    }
+                    d.model = String::from_utf8_lossy(&m_out.stdout).trim().to_string();
                 }
+            }
+            if d.model.is_empty() {
+                let key = if d.is_wireless { "device.wireless_fallback" } else { "device.usb_fallback" };
+                d.model = trf(key, &[("serial", &d.serial)]);
             }
         }
         devices
@@ -1115,17 +1116,17 @@ fn get_device_wlan_ip(serial: &str) -> Option<String> {
 
 fn switch_device_to_wifi(serial: &str) -> Result<String, String> {
     let ip = get_device_wlan_ip(serial).ok_or_else(|| {
-        "Could not detect phone Wi-Fi IP address. Ensure Wi-Fi is active on phone.".to_string()
+        tr("error.no_wifi_ip").to_string()
     })?;
 
     let tcp_out = Command::new("adb")
         .args(["-s", serial, "tcpip", "5555"])
         .output()
-        .map_err(|e| format!("adb tcpip failed: {}", e))?;
+        .map_err(|e| trf("error.tcpip_run", &[("error", &e.to_string())]))?;
 
     if !tcp_out.status.success() {
         let err = String::from_utf8_lossy(&tcp_out.stderr);
-        return Err(format!("adb tcpip error: {}", err));
+        return Err(trf("error.tcpip", &[("error", &err)]));
     }
 
     thread::sleep(Duration::from_millis(1500));
@@ -1143,7 +1144,7 @@ fn adb_connect_wireless(target: &str) -> Result<String, String> {
     let out = Command::new("adb")
         .args(["connect", &address])
         .output()
-        .map_err(|e| format!("Failed to run adb connect: {}", e))?;
+        .map_err(|e| trf("error.connect_run", &[("error", &e.to_string())]))?;
 
     let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
@@ -1156,7 +1157,7 @@ fn adb_connect_wireless(target: &str) -> Result<String, String> {
         Ok(address)
     } else {
         Err(if combined.is_empty() {
-            "Connection failed. Please verify the IP and port.".to_string()
+            tr("error.connect").to_string()
         } else {
             combined
         })
@@ -1221,7 +1222,7 @@ fn qr_pair_and_connect(
     progress: impl Fn(&str),
 ) -> Result<String, String> {
     let mdns =
-        ServiceDaemon::new().map_err(|e| format!("Could not start mDNS discovery: {}", e))?;
+        ServiceDaemon::new().map_err(|e| trf("error.mdns_start", &[("error", &e.to_string())]))?;
 
     let result = (|| {
         let instance_prefix = format!("{}.", name);
@@ -1233,14 +1234,14 @@ fn qr_pair_and_connect(
             |fullname, _| fullname.starts_with(&instance_prefix),
         )
         .map_err(|e| match e {
-            MdnsWaitError::TimedOut => "Timed out waiting for the phone. Check that both are on the same Wi-Fi and that mDNS (UDP 5353) isn't blocked by a firewall.".to_string(),
+            MdnsWaitError::TimedOut => tr("error.pair_timeout").to_string(),
             other => other.to_string(),
         })?;
 
-        progress("🔗 Phone found, pairing...");
+        progress(tr("qr.pairing"));
         adb_pair(&pair_addr.to_string(), password)?;
 
-        progress("✓ Paired! Connecting...");
+        progress(tr("qr.paired"));
         let phone_ip = pair_addr.ip();
         let connect_addr = wait_for_mdns_service(
             &mdns,
@@ -1250,7 +1251,7 @@ fn qr_pair_and_connect(
             |_, addr| addr.ip() == phone_ip,
         )
         .map_err(|e| match e {
-            MdnsWaitError::TimedOut => "Paired, but the phone did not announce its connect port. Enter the IP:port shown under Wireless debugging and press Connect.".to_string(),
+            MdnsWaitError::TimedOut => tr("error.connect_port_timeout").to_string(),
             other => other.to_string(),
         })?;
 
@@ -1270,8 +1271,8 @@ enum MdnsWaitError {
 impl std::fmt::Display for MdnsWaitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            MdnsWaitError::TimedOut => write!(f, "Timed out"),
-            MdnsWaitError::Cancelled => write!(f, "Cancelled"),
+            MdnsWaitError::TimedOut => write!(f, "{}", tr("error.timed_out")),
+            MdnsWaitError::Cancelled => write!(f, "{}", tr("error.cancelled")),
             MdnsWaitError::Failed(e) => write!(f, "{}", e),
         }
     }
@@ -1286,7 +1287,7 @@ fn wait_for_mdns_service(
 ) -> Result<SocketAddr, MdnsWaitError> {
     let receiver = mdns
         .browse(service_type)
-        .map_err(|e| MdnsWaitError::Failed(format!("mDNS browse failed: {}", e)))?;
+        .map_err(|e| MdnsWaitError::Failed(trf("error.mdns_browse", &[("error", &e.to_string())])))?;
     let deadline = Instant::now() + timeout;
 
     let result = 'wait: loop {
@@ -1307,7 +1308,7 @@ fn wait_for_mdns_service(
             }
             Ok(_) | Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
-                break Err(MdnsWaitError::Failed("mDNS discovery stopped unexpectedly".into()));
+                break Err(MdnsWaitError::Failed(tr("error.mdns_stopped").into()));
             }
         }
     };
@@ -1320,7 +1321,7 @@ fn adb_pair(target: &str, password: &str) -> Result<(), String> {
     let out = Command::new("adb")
         .args(["pair", target, password])
         .output()
-        .map_err(|e| format!("Failed to run adb pair: {}", e))?;
+        .map_err(|e| trf("error.pair_run", &[("error", &e.to_string())]))?;
 
     let combined = format!(
         "{} {}",
@@ -1333,7 +1334,7 @@ fn adb_pair(target: &str, password: &str) -> Result<(), String> {
     if combined.contains("Successfully paired") {
         Ok(())
     } else if combined.is_empty() {
-        Err("Pairing failed.".to_string())
+        Err(tr("error.pair").to_string())
     } else {
         Err(combined)
     }
