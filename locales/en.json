@@ -37,6 +37,9 @@
   "status.failed": "● Failed to Start",
   "status.crashed": "● Stream crashed at {res}. Try another resolution or camera.",
   "status.relaunched": "⚠️ {res} crashed on this phone, relaunched at {fallback}",
+  "status.camera_busy_retry": "⚠️ Camera busy, retrying...",
+  "status.camera_busy": "● The phone's camera is in use by another app. Close it and press Launch again.",
+  "status.camera_blocked": "● The phone blocked camera access. Check the camera privacy toggle in Quick Settings.",
 
   "waiting.title": "Waiting for Android Device...",
   "waiting.hint": "Connect your phone via USB with USB Debugging enabled, or connect wirelessly over Wi-Fi below:",

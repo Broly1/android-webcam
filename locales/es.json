@@ -37,6 +37,9 @@
   "status.failed": "● Error al iniciar",
   "status.crashed": "● La transmisión falló en {res}. Prueba otra resolución o cámara.",
   "status.relaunched": "⚠️ {res} falló en este teléfono, reiniciado en {fallback}",
+  "status.camera_busy_retry": "⚠️ Cámara ocupada, reintentando...",
+  "status.camera_busy": "● Otra aplicación está usando la cámara del teléfono. Ciérrala y pulsa Iniciar de nuevo.",
+  "status.camera_blocked": "● El teléfono bloqueó el acceso a la cámara. Revisa el interruptor de privacidad de la cámara en Ajustes rápidos.",
 
   "waiting.title": "Esperando dispositivo Android...",
   "waiting.hint": "Conecta tu teléfono por USB con la Depuración USB activada, o conéctalo de forma inalámbrica por Wi-Fi abajo:",
