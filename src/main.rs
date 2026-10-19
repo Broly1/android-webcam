@@ -140,9 +140,12 @@ fn debug_enabled() -> bool {
 
 fn debug_log(msg: &str) {
     if debug_enabled() {
-        static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
-        let t = START.get_or_init(Instant::now).elapsed().as_secs_f64();
-        eprintln!("[{:8.3}] {}", t, msg);
+        // Wall-clock time, so lines can be matched against the system journal.
+        let t = glib::DateTime::now_local()
+            .and_then(|d| d.format("%H:%M:%S.%f"))
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        eprintln!("[{}] {}", t, msg);
     }
 }
 
@@ -747,6 +750,7 @@ fn build_ui(app: &Application) {
             let qr_session = qr_session.clone();
             thread::spawn(move || {
                 let send = |message: String, done: bool, connected_addr: Option<String>| {
+                    debug_log(&format!("qr pairing: {} (done={})", message, done));
                     let _ = tx_clone.send(AppEvent::QrPairStatus { session, message, done, connected_addr });
                 };
                 let result = qr_pair_and_connect(
