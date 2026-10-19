@@ -344,13 +344,29 @@ fn build_ui(app: &Application) {
     controls_box.append(&fps_dropdown);
     controls_box.append(&mic_check);
     controls_box.append(&button_box);
-    controls_box.append(&status_label);
+
+    // Warning/status labels that are usually empty: hide them while empty so the box's
+    // spacing doesn't leave blank gaps (themes with taller widgets need the room).
+    for label in [&wifi_action_status, &camera_warning, &warning_label] {
+        label.set_visible(!label.label().is_empty());
+        label.connect_label_notify(|l| l.set_visible(!l.label().is_empty()));
+    }
 
     let scrolled_controls = ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::Never)
         .vscrollbar_policy(PolicyType::Automatic)
+        .vexpand(true)
         .child(&controls_box)
         .build();
+
+    // The status line sits outside the scrolled area so it's always visible, even when
+    // a theme with taller widgets makes the controls overflow the window.
+    status_label.set_margin_start(18);
+    status_label.set_margin_end(18);
+    status_label.set_margin_top(6);
+    let controls_page = Box::new(Orientation::Vertical, 0);
+    controls_page.append(&scrolled_controls);
+    controls_page.append(&status_label);
 
     // ==========================================
     // WAITING SCREEN (with Wireless Option)
@@ -491,7 +507,7 @@ fn build_ui(app: &Application) {
     let qr_session = Arc::new(AtomicU64::new(0));
 
     stack.add_named(&waiting_box, Some("waiting"));
-    stack.add_named(&scrolled_controls, Some("controls"));
+    stack.add_named(&controls_page, Some("controls"));
 
     // ==========================================
     // EVENT HANDLERS & SIGNALS
