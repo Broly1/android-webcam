@@ -536,14 +536,12 @@ fn build_ui(app: &Application) {
                 background,
                 busy_retried: false,
             };
-            let serial = launch.serial.as_deref();
             if let Some((child, output)) = run_scrcpy(&launch) {
-                let mic_txt = if mic_blocked { tr("status.mic_off") } else { tr("status.mic_on") };
-                let mode_txt = if let Some(ser) = serial {
-                    if is_wireless_serial(ser) { " [Wi-Fi]" } else { " [USB]" }
-                } else { "" };
-                let bg_txt = if background { format!(" {}", tr("status.background")) } else { String::new() };
-                status_label.set_markup(&format!("<span foreground='green'>{}{} {}{}</span>", esc(tr("status.active")), mode_txt, esc(mic_txt), esc(&bg_txt)));
+                status_label.set_markup(&format!(
+                    "<span foreground='green'><b>{}</b>\n{}</span>",
+                    esc(tr("status.active")),
+                    esc(&stream_details(&launch))
+                ));
                 s.current_process = Some(child);
                 s.current_output = output;
                 s.current_launch = Some(launch);
@@ -896,8 +894,12 @@ fn build_ui(app: &Application) {
                 Some((child, output)) => {
                     s.current_process = Some(child);
                     s.current_output = output;
+                    status_label.set_markup(&format!(
+                        "<span foreground='#ffa500'>{}</span>\n<span foreground='green'>{}</span>",
+                        esc(&notice),
+                        esc(&stream_details(&retry))
+                    ));
                     s.current_launch = Some(retry);
-                    status_label.set_markup(&format!("<span foreground='#ffa500'>{}</span>", esc(&notice)));
                 }
                 None => fail(tr("status.failed")),
             }
@@ -1715,6 +1717,24 @@ fn collect_output(r: impl Read + Send + 'static, output: ScrcpyOutput) {
             out.push_back(line);
         }
     });
+}
+
+/// What a running stream is using, for the status line, e.g.
+/// "1920x1080 · 60 FPS · Back Camera · Mic On · Wi-Fi · Background".
+fn stream_details(launch: &LaunchParams) -> String {
+    let mut parts = vec![
+        launch.res.clone(),
+        trf("status.fps", &[("fps", &launch.fps)]),
+        tr(if launch.facing == "front" { "camera.front" } else { "camera.back" }).to_string(),
+        tr(if launch.block_mic { "status.mic_off" } else { "status.mic_on" }).to_string(),
+    ];
+    if let Some(serial) = launch.serial.as_deref().filter(|s| !s.is_empty()) {
+        parts.push(if is_wireless_serial(serial) { "Wi-Fi" } else { "USB" }.to_string());
+    }
+    if launch.background {
+        parts.push(tr("status.background").to_string());
+    }
+    parts.join(" · ")
 }
 
 fn run_scrcpy(launch: &LaunchParams) -> Option<(Child, ScrcpyOutput)> {
