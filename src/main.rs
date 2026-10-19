@@ -121,6 +121,8 @@ struct LaunchParams {
     facing: String,
     block_mic: bool,
     res: String,
+    /// No scrcpy window: only feeds the virtual webcam (for OBS, Zoom, ...).
+    background: bool,
     /// Already relaunched once because the camera was busy.
     busy_retried: bool,
 }
@@ -142,6 +144,7 @@ pub enum CrashCause {
 
 const APP_ID: &str = "com.android.webcam";
 const APP_ICON_PATH: &str = "/usr/share/icons/hicolor/256x256/apps/android-webcam.png";
+const USB_ICON: &str = "android-webcam-usb-symbolic";
 const DONATE_URL: &str = "https://www.paypal.com/paypalme/bmacffe";
 
 struct AppState {
@@ -168,11 +171,12 @@ fn build_ui(app: &Application) {
         .application(app)
         .title(tr("app.title"))
         .default_width(380)
-        .default_height(600)
+        .default_height(640)
         .build();
 
     install_theme_workarounds();
     install_donate_css();
+    install_bundled_icons();
 
     let config = Arc::new(Mutex::new(load_config()));
     let state = Arc::new(Mutex::new(AppState {
@@ -215,8 +219,12 @@ fn build_ui(app: &Application) {
         .tooltip_text(tr("wifi.switch_tooltip"))
         .build();
 
+    let disconnect_box = Box::new(Orientation::Horizontal, 6);
+    disconnect_box.set_halign(gtk4::Align::Center);
+    disconnect_box.append(&gtk4::Image::from_icon_name(USB_ICON));
+    disconnect_box.append(&Label::new(Some(tr("wifi.disconnect"))));
     let disconnect_wifi_btn = Button::builder()
-        .label(tr("wifi.disconnect"))
+        .child(&disconnect_box)
         .css_classes(["destructive-action"])
         .build();
     disconnect_wifi_btn.set_visible(false);
@@ -259,24 +267,26 @@ fn build_ui(app: &Application) {
     let mic_check = CheckButton::with_label(tr("mic.block"));
     mic_check.set_active(config.lock().unwrap().block_mic);
 
-    let save_defaults_btn = Button::builder()
-        .label(tr("defaults.save"))
-        .tooltip_text(tr("defaults.save_tooltip"))
-        .build();
-
-    let button_box = Box::new(Orientation::Horizontal, 10);
-    button_box.set_homogeneous(true);
+    let button_box = Box::new(Orientation::Vertical, 10);
+    let launch_row = Box::new(Orientation::Horizontal, 10);
+    launch_row.set_homogeneous(true);
 
     let start_btn = Button::builder()
         .label(tr("stream.launch"))
         .css_classes(["suggested-action"])
+        .build();
+    let background_btn = Button::builder()
+        .label(tr("stream.launch_background"))
+        .tooltip_text(tr("stream.launch_background_tooltip"))
         .build();
     let stop_btn = Button::builder()
         .label(tr("stream.stop"))
         .css_classes(["destructive-action"])
         .build();
 
-    button_box.append(&start_btn);
+    launch_row.append(&start_btn);
+    launch_row.append(&background_btn);
+    button_box.append(&launch_row);
     button_box.append(&stop_btn);
 
     let status_label = Label::builder()
@@ -318,7 +328,6 @@ fn build_ui(app: &Application) {
     );
     controls_box.append(&fps_dropdown);
     controls_box.append(&mic_check);
-    controls_box.append(&save_defaults_btn);
     controls_box.append(&button_box);
     controls_box.append(&status_label);
 
@@ -473,9 +482,90 @@ fn build_ui(app: &Application) {
     // EVENT HANDLERS & SIGNALS
     // ==========================================
 
+    // Launch (with or without the scrcpy window)
+    let apply_changes = glib::clone!(
+        @weak facing_dropdown, @weak res_combo, @weak fps_dropdown, @weak mic_check, @weak status_label, @strong state, @strong config => move |background: bool| {
+            let mut s = state.lock().unwrap();
+
+            stop_stream(&mut s);
+            thread::sleep(Duration::from_millis(500));
+
+            if !Path::new("/dev/video9").exists() {
+                let _ = Command::new("pkexec")
+                    .args(["modprobe", "v4l2loopback", "video_nr=9", "card_label=Android-Webcam", "exclusive_caps=1"])
+                    .status();
+            }
+
+            let facing = if facing_dropdown.selected() == 1 { "front" } else { "back" };
+            let res = res_combo.active_text().map(|s| s.to_string()).unwrap_or_else(|| "1920x1080".into());
+            let fps = if fps_dropdown.selected() == 1 { "60" } else { "30" };
+            let mic_blocked = mic_check.is_active();
+
+            // Save settings automatically on Launch. Not the resolution: picking one in the combo
+            // already saves it, and the combo may be showing a crash fallback or a substitute for
+            // a preferred size this phone lacks, neither of which should replace the preference.
+            {
+                let mut cfg = config.lock().unwrap();
+                cfg.camera_facing = facing_dropdown.selected();
+                cfg.fps_index = fps_dropdown.selected();
+                cfg.block_mic = mic_blocked;
+                save_config(&cfg);
+            }
+
+            let launch = LaunchParams {
+                serial: s.active_serial.clone(),
+                fps: fps.to_string(),
+                facing: facing.to_string(),
+                block_mic: mic_blocked,
+                res,
+                background,
+                busy_retried: false,
+            };
+            let serial = launch.serial.as_deref();
+            if let Some((child, output)) = run_scrcpy(&launch) {
+                let mic_txt = if mic_blocked { tr("status.mic_off") } else { tr("status.mic_on") };
+                let mode_txt = if let Some(ser) = serial {
+                    if is_wireless_serial(ser) { " [Wi-Fi]" } else { " [USB]" }
+                } else { "" };
+                let bg_txt = if background { format!(" {}", tr("status.background")) } else { String::new() };
+                status_label.set_markup(&format!("<span foreground='green'>{}{} {}{}</span>", esc(tr("status.active")), mode_txt, esc(mic_txt), esc(&bg_txt)));
+                s.current_process = Some(child);
+                s.current_output = output;
+                s.current_launch = Some(launch);
+            } else {
+                status_label.set_markup(&format!("<span foreground='red'>{}</span>", esc(tr("status.failed"))));
+            }
+        }
+    );
+
+    let apply_shared = Rc::new(apply_changes);
+    start_btn.connect_clicked(glib::clone!(@strong apply_shared => move |_| { (apply_shared)(false); }));
+    background_btn.connect_clicked(glib::clone!(@strong apply_shared => move |_| { (apply_shared)(true); }));
+
+    // Settings apply on their own: if a stream is running, relaunch it (same mode) shortly
+    // after a change. The delay merges related changes, e.g. switching camera also reloads
+    // the resolution list.
+    let pending_restart: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+    let schedule_restart = Rc::new(glib::clone!(@strong state, @strong apply_shared, @strong pending_restart => move || {
+        let Some(background) = state.lock().unwrap().current_launch.as_ref().map(|l| l.background) else {
+            return; // nothing running: the new settings are just saved for next launch
+        };
+        if let Some(id) = pending_restart.borrow_mut().take() {
+            id.remove();
+        }
+        let apply = apply_shared.clone();
+        let pending = pending_restart.clone();
+        let id = glib::timeout_add_local_once(Duration::from_millis(400), move || {
+            pending.borrow_mut().take();
+            (apply)(background);
+        });
+        *pending_restart.borrow_mut() = Some(id);
+    }));
+
+
     // Camera facing changed
     facing_dropdown.connect_selected_notify(glib::clone!(
-        @weak res_combo, @weak camera_warning, @strong config, @strong state, @strong is_updating_res => move |dd| {
+        @weak res_combo, @weak camera_warning, @strong config, @strong state, @strong is_updating_res, @strong schedule_restart => move |dd| {
             let facing = if dd.selected() == 1 {
                 camera_warning.set_markup(&format!("<span foreground='#ffa500' size='small'>{}</span>", esc(tr("camera.front_warning"))));
                 "front"
@@ -493,12 +583,13 @@ fn build_ui(app: &Application) {
             let serial = state.lock().unwrap().active_serial.clone();
             let pref_res = config.lock().unwrap().resolution.clone();
             refresh_resolutions(&res_combo, facing, serial.as_deref(), Some(&pref_res), &is_updating_res);
+            schedule_restart();
         }
     ));
 
     // Resolution changed
     res_combo.connect_changed(glib::clone!(
-        @weak warning_label, @strong config, @strong is_updating_res => move |cb| {
+        @weak warning_label, @strong config, @strong is_updating_res, @strong schedule_restart => move |cb| {
             if let Some(res_str) = cb.active_text() {
                 let res_s = res_str.to_string();
                 if let Some(width_str) = res_s.split('x').next() {
@@ -511,48 +602,39 @@ fn build_ui(app: &Application) {
                     }
                 }
 
+                // Only user picks: programmatic changes (list reloads, crash fallbacks) neither
+                // save nor relaunch.
                 if !is_updating_res.load(Ordering::SeqCst) && !res_s.is_empty() {
-                    let mut cfg = config.lock().unwrap();
-                    cfg.resolution = res_s;
-                    save_config(&cfg);
+                    {
+                        let mut cfg = config.lock().unwrap();
+                        cfg.resolution = res_s;
+                        save_config(&cfg);
+                    }
+                    schedule_restart();
                 }
             }
         }
     ));
 
     // FPS changed
-    fps_dropdown.connect_selected_notify(glib::clone!(@strong config => move |dd| {
-        let mut cfg = config.lock().unwrap();
-        cfg.fps_index = dd.selected();
-        save_config(&cfg);
+    fps_dropdown.connect_selected_notify(glib::clone!(@strong config, @strong schedule_restart => move |dd| {
+        {
+            let mut cfg = config.lock().unwrap();
+            cfg.fps_index = dd.selected();
+            save_config(&cfg);
+        }
+        schedule_restart();
     }));
 
     // Mic checkbox changed
-    mic_check.connect_toggled(glib::clone!(@strong config => move |btn| {
-        let mut cfg = config.lock().unwrap();
-        cfg.block_mic = btn.is_active();
-        save_config(&cfg);
-    }));
-
-    // Explicit "Save as Default" button
-    save_defaults_btn.connect_clicked(glib::clone!(
-        @weak facing_dropdown, @weak res_combo, @weak fps_dropdown, @weak mic_check, @weak status_label, @strong config => move |_| {
-            let facing_idx = facing_dropdown.selected();
-            let res = res_combo.active_text().map(|s| s.to_string()).unwrap_or_else(|| "1920x1080".into());
-            let fps_idx = fps_dropdown.selected();
-            let mic_blocked = mic_check.is_active();
-
-            {
-                let mut cfg = config.lock().unwrap();
-                cfg.camera_facing = facing_idx;
-                cfg.resolution = res;
-                cfg.fps_index = fps_idx;
-                cfg.block_mic = mic_blocked;
-                save_config(&cfg);
-            }
-            status_label.set_markup(&format!("<span foreground='#3584e4'><b>{}</b></span>", esc(tr("defaults.saved"))));
+    mic_check.connect_toggled(glib::clone!(@strong config, @strong schedule_restart => move |btn| {
+        {
+            let mut cfg = config.lock().unwrap();
+            cfg.block_mic = btn.is_active();
+            save_config(&cfg);
         }
-    ));
+        schedule_restart();
+    }));
 
     // Multiple devices selection dropdown changed
     device_combo.connect_changed(glib::clone!(
@@ -711,63 +793,6 @@ fn build_ui(app: &Application) {
             }
         }
     ));
-
-    // Launch / Update stream
-    let apply_changes = glib::clone!(
-        @weak facing_dropdown, @weak res_combo, @weak fps_dropdown, @weak mic_check, @weak status_label, @strong state, @strong config => move || {
-            let mut s = state.lock().unwrap();
-
-            stop_stream(&mut s);
-            thread::sleep(Duration::from_millis(500));
-
-            if !Path::new("/dev/video9").exists() {
-                let _ = Command::new("pkexec")
-                    .args(["modprobe", "v4l2loopback", "video_nr=9", "card_label=Android-Webcam", "exclusive_caps=1"])
-                    .status();
-            }
-
-            let facing = if facing_dropdown.selected() == 1 { "front" } else { "back" };
-            let res = res_combo.active_text().map(|s| s.to_string()).unwrap_or_else(|| "1920x1080".into());
-            let fps = if fps_dropdown.selected() == 1 { "60" } else { "30" };
-            let mic_blocked = mic_check.is_active();
-
-            // Save settings automatically on Launch. Not the resolution: picking one in the combo
-            // already saves it, and the combo may be showing a crash fallback or a substitute for
-            // a preferred size this phone lacks, neither of which should replace the preference.
-            {
-                let mut cfg = config.lock().unwrap();
-                cfg.camera_facing = facing_dropdown.selected();
-                cfg.fps_index = fps_dropdown.selected();
-                cfg.block_mic = mic_blocked;
-                save_config(&cfg);
-            }
-
-            let launch = LaunchParams {
-                serial: s.active_serial.clone(),
-                fps: fps.to_string(),
-                facing: facing.to_string(),
-                block_mic: mic_blocked,
-                res,
-                busy_retried: false,
-            };
-            let serial = launch.serial.as_deref();
-            if let Some((child, output)) = run_scrcpy(&launch) {
-                let mic_txt = if mic_blocked { tr("status.mic_off") } else { tr("status.mic_on") };
-                let mode_txt = if let Some(ser) = serial {
-                    if is_wireless_serial(ser) { " [Wi-Fi]" } else { " [USB]" }
-                } else { "" };
-                status_label.set_markup(&format!("<span foreground='green'>{}{} {}</span>", esc(tr("status.active")), mode_txt, esc(mic_txt)));
-                s.current_process = Some(child);
-                s.current_output = output;
-                s.current_launch = Some(launch);
-            } else {
-                status_label.set_markup(&format!("<span foreground='red'>{}</span>", esc(tr("status.failed"))));
-            }
-        }
-    );
-
-    let apply_shared = Arc::new(apply_changes);
-    start_btn.connect_clicked(glib::clone!(@strong apply_shared => move |_| { (apply_shared)(); }));
 
     // Stop button
     stop_btn.connect_clicked(glib::clone!(@strong state, @weak status_label => move |_| {
@@ -1681,6 +1706,9 @@ fn run_scrcpy(launch: &LaunchParams) -> Option<(Child, ScrcpyOutput)> {
         "--v4l2-sink=/dev/video9".into(),
         "--v4l2-buffer=0".into(),
     ];
+    if launch.background {
+        args.push("--no-window".into());
+    }
 
     if let Some(s) = launch.serial.as_deref() {
         if !s.is_empty() {
@@ -1788,6 +1816,22 @@ fn install_theme_workarounds() {
         &provider,
         gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
+}
+
+/// Icons we draw ourselves (no theme has a USB symbol everywhere). Written to the cache dir
+/// and added to GTK's icon search path; the -symbolic name makes GTK recolor it to match
+/// the theme's text color, light or dark.
+fn install_bundled_icons() {
+    let Some(display) = gdk::Display::default() else { return };
+    let dir = glib::user_cache_dir().join("android-webcam").join("icons");
+    let file = dir.join(format!("{}.svg", USB_ICON));
+    let svg = include_str!("../resources/usb-symbolic.svg");
+    if fs::read_to_string(&file).ok().as_deref() != Some(svg) {
+        if fs::create_dir_all(&dir).and_then(|_| fs::write(&file, svg)).is_err() {
+            return;
+        }
+    }
+    gtk4::IconTheme::for_display(&display).add_search_path(&dir);
 }
 
 fn install_donate_css() {
