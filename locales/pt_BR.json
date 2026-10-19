@@ -77,5 +77,9 @@
   "error.timed_out": "Tempo esgotado",
   "error.cancelled": "Cancelado",
   "error.pair_timeout": "Tempo esgotado aguardando o celular. Verifique se ambos estão no mesmo Wi-Fi e se o mDNS (UDP 5353) não está bloqueado pelo firewall.",
-  "error.connect_port_timeout": "Pareado, mas o celular não anunciou a porta de conexão. Digite o IP:porta exibido em Depuração por Wi-Fi e clique em Conectar."
+  "error.connect_port_timeout": "Pareado, mas o celular não anunciou a porta de conexão. Digite o IP:porta exibido em Depuração por Wi-Fi e clique em Conectar.",
+
+  "donate.button": "Doar",
+  "donate.copy_link": "Não foi possível abrir o navegador. Você pode copiar o link abaixo:",
+  "donate.close": "Fechar"
 }

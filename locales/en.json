@@ -77,5 +77,9 @@
   "error.timed_out": "Timed out",
   "error.cancelled": "Cancelled",
   "error.pair_timeout": "Timed out waiting for the phone. Check that both are on the same Wi-Fi and that mDNS (UDP 5353) isn't blocked by a firewall.",
-  "error.connect_port_timeout": "Paired, but the phone did not announce its connect port. Enter the IP:port shown under Wireless debugging and press Connect."
+  "error.connect_port_timeout": "Paired, but the phone did not announce its connect port. Enter the IP:port shown under Wireless debugging and press Connect.",
+
+  "donate.button": "Donate",
+  "donate.copy_link": "Could not open your web browser. You can copy the link below:",
+  "donate.close": "Close"
 }

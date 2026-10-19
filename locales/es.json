@@ -77,5 +77,9 @@
   "error.timed_out": "Tiempo agotado",
   "error.cancelled": "Cancelado",
   "error.pair_timeout": "Tiempo agotado esperando el teléfono. Comprueba que ambos estén en la misma red Wi-Fi y que el firewall no bloquee mDNS (UDP 5353).",
-  "error.connect_port_timeout": "Vinculado, pero el teléfono no anunció su puerto de conexión. Introduce la IP:puerto que aparece en Depuración inalámbrica y pulsa Conectar."
+  "error.connect_port_timeout": "Vinculado, pero el teléfono no anunció su puerto de conexión. Introduce la IP:puerto que aparece en Depuración inalámbrica y pulsa Conectar.",
+
+  "donate.button": "Donar",
+  "donate.copy_link": "No se pudo abrir el navegador web. Puede copiar el enlace a continuación:",
+  "donate.close": "Cerrar"
 }
