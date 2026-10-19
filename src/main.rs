@@ -562,13 +562,13 @@ fn build_ui(app: &Application) {
                 let mut s = state.lock().unwrap();
                 s.active_serial = Some(serial_str.clone());
 
-                let is_wireless = serial_str.contains(':');
+                let is_wireless = is_wireless_serial(&serial_str);
                 switch_wifi_btn.set_visible(!is_wireless);
                 disconnect_wifi_btn.set_visible(is_wireless);
 
                 let model = s.devices.iter().find(|d| d.serial == serial_str).map(|d| d.model.clone()).unwrap_or_else(|| serial_str.clone());
                 let badge = if is_wireless {
-                    format!("<span foreground='#3584e4'>[Wi-Fi: {}]</span>", serial_str)
+                    wifi_badge(&serial_str)
                 } else {
                     "<span foreground='#2ec27e'>[USB]</span>".to_string()
                 };
@@ -704,7 +704,7 @@ fn build_ui(app: &Application) {
                 s.active_serial.clone()
             };
             if let Some(serial) = active_serial {
-                if serial.contains(':') {
+                if is_wireless_serial(&serial) {
                     adb_disconnect(&serial);
                     wifi_action_status.set_markup(&format!("<span foreground='gray'>{}</span>", esc(tr("wifi.disconnected"))));
                 }
@@ -754,7 +754,7 @@ fn build_ui(app: &Application) {
             if let Some((child, output)) = run_scrcpy(&launch) {
                 let mic_txt = if mic_blocked { tr("status.mic_off") } else { tr("status.mic_on") };
                 let mode_txt = if let Some(ser) = serial {
-                    if ser.contains(':') { " [Wi-Fi]" } else { " [USB]" }
+                    if is_wireless_serial(ser) { " [Wi-Fi]" } else { " [USB]" }
                 } else { "" };
                 status_label.set_markup(&format!("<span foreground='green'>{}{} {}</span>", esc(tr("status.active")), mode_txt, esc(mic_txt)));
                 s.current_process = Some(child);
@@ -948,7 +948,7 @@ fn build_ui(app: &Application) {
 
                             // Update device label badge
                             let badge = if selected.is_wireless {
-                                format!("<span foreground='#3584e4'>[Wi-Fi: {}]</span>", selected.serial)
+                                wifi_badge(&selected.serial)
                             } else {
                                 "<span foreground='#2ec27e'>[USB]</span>".to_string()
                             };
@@ -1154,6 +1154,25 @@ fn show_link_window(parent: &ApplicationWindow, url: &str) {
     win.present();
 }
 
+/// Network devices show up in `adb devices` either as `ip:port` (adb connect)
+/// or, when Android 11+ wireless debugging reconnects on its own via mDNS, as
+/// `adb-<serial>-<id>._adb-tls-connect._tcp` (no ':' at all).
+pub fn is_wireless_serial(serial: &str) -> bool {
+    serial.contains(':')
+        || serial.ends_with("._adb-tls-connect._tcp")
+        || serial.ends_with("._adb._tcp")
+}
+
+/// Badge for a wireless device: shows the address when there is one; mDNS
+/// names are long and meaningless to users, so those get a plain [Wi-Fi].
+fn wifi_badge(serial: &str) -> String {
+    if serial.contains(':') {
+        format!("<span foreground='#3584e4'>[Wi-Fi: {}]</span>", esc(serial))
+    } else {
+        "<span foreground='#3584e4'>[Wi-Fi]</span>".to_string()
+    }
+}
+
 pub fn parse_devices_text(text: &str) -> Vec<DeviceInfo> {
     let mut devices = Vec::new();
     for line in text.lines() {
@@ -1164,7 +1183,7 @@ pub fn parse_devices_text(text: &str) -> Vec<DeviceInfo> {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() >= 2 && parts[1] == "device" {
             let serial = parts[0].to_string();
-            let is_wireless = serial.contains(':');
+            let is_wireless = is_wireless_serial(&serial);
             let mut model = String::new();
             for p in &parts[2..] {
                 if let Some(m) = p.strip_prefix("model:") {
@@ -1912,5 +1931,20 @@ ZY2234ABCD	device usb:1-1 product:raven model:Pixel_6_Pro device:raven transport
         assert_eq!(devices[1].serial, "192.168.1.50:5555");
         assert_eq!(devices[1].model, "Pixel 6");
         assert!(devices[1].is_wireless);
+    }
+
+    #[test]
+    fn test_parse_devices_mdns_wireless() {
+        // Android 11+ wireless debugging, auto-reconnected by adb over mDNS
+        let output = "List of devices attached\n\
+adb-0A1B2C3D4E5F6G-AbCdEf._adb-tls-connect._tcp\tdevice product:husky model:Pixel_8_Pro device:husky transport_id:1\n";
+        let devices = parse_devices_text(output);
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].model, "Pixel 8 Pro");
+        assert!(devices[0].is_wireless);
+
+        assert!(is_wireless_serial("adb-ABC-xyz._adb._tcp"));
+        assert!(is_wireless_serial("192.168.1.50:5555"));
+        assert!(!is_wireless_serial("0A1B2C3D4E5F6G"));
     }
 }
