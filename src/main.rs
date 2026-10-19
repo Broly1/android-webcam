@@ -162,7 +162,6 @@ pub enum CrashCause {
 
 const APP_ID: &str = "com.android.webcam";
 const APP_ICON_PATH: &str = "/usr/share/icons/hicolor/256x256/apps/android-webcam.png";
-const USB_ICON: &str = "android-webcam-usb-symbolic";
 const DONATE_URL: &str = "https://www.paypal.com/paypalme/bmacffe";
 
 struct AppState {
@@ -194,7 +193,6 @@ fn build_ui(app: &Application) {
 
     install_theme_workarounds();
     install_donate_css();
-    install_bundled_icons();
 
     let config = Arc::new(Mutex::new(load_config()));
     let state = Arc::new(Mutex::new(AppState {
@@ -239,7 +237,7 @@ fn build_ui(app: &Application) {
 
     let disconnect_box = Box::new(Orientation::Horizontal, 6);
     disconnect_box.set_halign(gtk4::Align::Center);
-    disconnect_box.append(&gtk4::Image::from_icon_name(USB_ICON));
+    disconnect_box.append(&usb_symbol());
     disconnect_box.append(&Label::new(Some(tr("wifi.disconnect"))));
     let disconnect_wifi_btn = Button::builder()
         .child(&disconnect_box)
@@ -1905,6 +1903,16 @@ fn install_theme_workarounds() {
     if !theme.to_lowercase().starts_with("breeze") {
         return;
     }
+    // Only when Breeze's GTK 4 theme is really installed: otherwise GTK falls back to
+    // Adwaita, whose sliders these negative margins would push below zero instead.
+    let mut theme_dirs = vec![glib::user_data_dir().join("themes")];
+    if let Some(home) = env::var_os("HOME") {
+        theme_dirs.push(PathBuf::from(home).join(".themes"));
+    }
+    theme_dirs.extend(glib::system_data_dirs().into_iter().map(|d| d.join("themes")));
+    if !theme_dirs.iter().any(|d| d.join(&theme).join("gtk-4.0").is_dir()) {
+        return;
+    }
     let provider = CssProvider::new();
     provider.load_from_data(
         "scrollbar.vertical slider { margin-left: -8px; margin-right: -8px; }
@@ -1917,20 +1925,43 @@ fn install_theme_workarounds() {
     );
 }
 
-/// Icons we draw ourselves (no theme has a USB symbol everywhere). Written to the cache dir
-/// and added to GTK's icon search path; the -symbolic name makes GTK recolor it to match
-/// the theme's text color, light or dark.
-fn install_bundled_icons() {
-    let Some(display) = gdk::Display::default() else { return };
-    let dir = glib::user_cache_dir().join("android-webcam").join("icons");
-    let file = dir.join(format!("{}.svg", USB_ICON));
-    let svg = include_str!("../resources/usb-symbolic.svg");
-    if fs::read_to_string(&file).ok().as_deref() != Some(svg) {
-        if fs::create_dir_all(&dir).and_then(|_| fs::write(&file, svg)).is_err() {
-            return;
+/// The USB trident, drawn with cairo in the widget's current text color. No icon theme has
+/// a USB symbol everywhere, and a bundled SVG needs an SVG loader and isn't recolored by
+/// every GTK version (GTK 4.18 left it dark grey on a red button), so draw it ourselves.
+fn usb_symbol() -> DrawingArea {
+    let area = DrawingArea::builder()
+        .content_width(16)
+        .content_height(16)
+        .valign(gtk4::Align::Center)
+        .build();
+    area.set_draw_func(|area, cr, width, height| {
+        #[allow(deprecated)]
+        let c = area.style_context().color();
+        cr.set_source_rgba(c.red().into(), c.green().into(), c.blue().into(), c.alpha().into());
+        // Designed on a 16x16 grid.
+        let s = f64::from(width.min(height)) / 16.0;
+        cr.translate((f64::from(width) - 16.0 * s) / 2.0, (f64::from(height) - 16.0 * s) / 2.0);
+        cr.scale(s, s);
+        let poly = |pts: &[(f64, f64)]| {
+            cr.move_to(pts[0].0, pts[0].1);
+            for &(x, y) in &pts[1..] {
+                cr.line_to(x, y);
+            }
+            cr.close_path();
+        };
+        poly(&[(8.0, 0.0), (11.0, 3.6), (5.0, 3.6)]); // arrow head
+        cr.rectangle(7.25, 3.0, 1.5, 9.0); // trunk
+        poly(&[(7.25, 10.2), (4.75, 8.6), (4.75, 6.2), (3.25, 6.2), (3.25, 9.4), (7.25, 11.9)]); // left arm
+        poly(&[(8.75, 8.6), (11.75, 6.7), (11.75, 5.0), (10.25, 5.0), (10.25, 5.9), (8.75, 6.85)]); // right arm
+        cr.rectangle(9.9, 2.6, 2.2, 2.2); // square tip
+        let _ = cr.fill();
+        for (x, y, r) in [(8.0, 13.5, 2.0), (4.0, 5.3, 1.4)] {
+            cr.new_sub_path();
+            cr.arc(x, y, r, 0.0, std::f64::consts::TAU); // base and round tip
         }
-    }
-    gtk4::IconTheme::for_display(&display).add_search_path(&dir);
+        let _ = cr.fill();
+    });
+    area
 }
 
 fn install_donate_css() {
