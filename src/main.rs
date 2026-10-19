@@ -131,6 +131,21 @@ struct LaunchParams {
 type ScrcpyOutput = Arc<Mutex<VecDeque<String>>>;
 const SCRCPY_OUTPUT_LINES: usize = 200;
 
+/// Set ANDROID_WEBCAM_DEBUG=1 to print scrcpy's output and what the app decides
+/// (launch, stop, auto-restart, crash recovery) to stderr.
+fn debug_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| env::var_os("ANDROID_WEBCAM_DEBUG").is_some_and(|v| !v.is_empty() && v != "0"))
+}
+
+fn debug_log(msg: &str) {
+    if debug_enabled() {
+        static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+        let t = START.get_or_init(Instant::now).elapsed().as_secs_f64();
+        eprintln!("[{:8.3}] {}", t, msg);
+    }
+}
+
 /// Why scrcpy exited, judged from its output.
 #[derive(Debug, PartialEq, Eq)]
 pub enum CrashCause {
@@ -548,8 +563,10 @@ fn build_ui(app: &Application) {
     let pending_restart: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
     let schedule_restart = Rc::new(glib::clone!(@strong state, @strong apply_shared, @strong pending_restart => move || {
         let Some(background) = state.lock().unwrap().current_launch.as_ref().map(|l| l.background) else {
+            debug_log("setting changed, nothing running: saved only");
             return; // nothing running: the new settings are just saved for next launch
         };
+        debug_log(&format!("setting changed: restarting stream in 400ms (background={})", background));
         if let Some(id) = pending_restart.borrow_mut().take() {
             id.remove();
         }
@@ -824,6 +841,7 @@ fn build_ui(app: &Application) {
                 _ => None,
             };
             let Some(clean_exit) = exit else { return glib::ControlFlow::Continue };
+            debug_log(&format!("scrcpy exited ({})", if clean_exit { "clean" } else { "error" }));
             s.current_process = None;
             let Some(launch) = s.current_launch.take() else { return glib::ControlFlow::Continue };
 
@@ -848,6 +866,7 @@ fn build_ui(app: &Application) {
             let output = s.current_output.lock().unwrap().iter().cloned().collect::<Vec<_>>().join("\n");
             let fail = |msg: &str| status_label.set_markup(&format!("<span foreground='red'>{}</span>", esc(msg)));
 
+            debug_log(&format!("crash cause: {:?}", crash_cause(&output)));
             let (retry, notice) = match crash_cause(&output) {
                 CrashCause::CameraBlocked => {
                     fail(tr("status.camera_blocked"));
@@ -1688,6 +1707,7 @@ pub fn crash_cause(output: &str) -> CrashCause {
 fn collect_output(r: impl Read + Send + 'static, output: ScrcpyOutput) {
     thread::spawn(move || {
         for line in BufReader::new(r).lines().map_while(Result::ok) {
+            debug_log(&format!("[scrcpy] {}", line));
             let mut out = output.lock().unwrap();
             if out.len() >= SCRCPY_OUTPUT_LINES {
                 out.pop_front();
@@ -1731,6 +1751,7 @@ fn run_scrcpy(launch: &LaunchParams) -> Option<(Child, ScrcpyOutput)> {
     if Path::new(APP_ICON_PATH).exists() {
         cmd.env("SCRCPY_ICON_PATH", APP_ICON_PATH);
     }
+    debug_log(&format!("launch: scrcpy {}", args.join(" ")));
     let mut child = cmd
         .args(&args)
         .stdout(Stdio::piped())
@@ -1750,6 +1771,7 @@ fn run_scrcpy(launch: &LaunchParams) -> Option<(Child, ScrcpyOutput)> {
 
 /// Stops the running stream: the scrcpy client here and its server on the phone.
 fn stop_stream(s: &mut AppState) {
+    debug_log("stop stream");
     if let Some(mut child) = s.current_process.take() {
         let _ = child.kill();
         let _ = child.wait();
