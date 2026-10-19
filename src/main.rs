@@ -1754,6 +1754,7 @@ fn stream_details(launch: &LaunchParams) -> String {
 }
 
 fn run_scrcpy(launch: &LaunchParams) -> Option<(Child, ScrcpyOutput)> {
+    prepare_v4l2_sink();
     let mut args = vec![
         "--video-source=camera".into(),
         format!("--camera-facing={}", launch.facing),
@@ -1809,8 +1810,7 @@ fn run_scrcpy(launch: &LaunchParams) -> Option<(Child, ScrcpyOutput)> {
 fn stop_stream(s: &mut AppState) {
     debug_log("stop stream");
     if let Some(mut child) = s.current_process.take() {
-        let _ = child.kill();
-        let _ = child.wait();
+        terminate_gracefully(&mut child);
     }
     s.current_launch = None;
     kill_scrcpy();
@@ -1850,6 +1850,43 @@ fn kill_scrcpy() {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
+}
+
+/// Ask scrcpy to quit (SIGTERM) so it closes its window properly, and only SIGKILL it if it
+/// hasn't exited after a moment. Killing a scrcpy that has a window outright crashes
+/// GNOME Shell 46 (Ubuntu 24.04): mutter trips over the vanished Wayland client.
+fn terminate_gracefully(child: &mut Child) {
+    let _ = Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let deadline = Instant::now() + Duration::from_millis(1500);
+    while Instant::now() < deadline {
+        if let Ok(Some(_)) = child.try_wait() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    debug_log("scrcpy ignored SIGTERM, killing it");
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// v4l2loopback before 0.13 (e.g. 0.12.7 on Ubuntu 24.04) breaks if an app (a browser
+/// listing cameras, OBS) opens the device while nothing is streaming: every later stream
+/// then fails with "VIDIOC_G_FMT: Invalid argument" until the module is reloaded.
+/// keep_format keeps the device a valid camera between streams, which avoids that. It's a
+/// per-device control that resets when the module reloads, so set it before each launch.
+fn prepare_v4l2_sink() {
+    let ok = Command::new("v4l2-ctl")
+        .args(["-d", "/dev/video9", "-c", "keep_format=1"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    debug_log(&format!("v4l2 keep_format=1: {}", if ok { "set" } else { "not set (v4l2-ctl missing or failed)" }));
 }
 
 /// Breeze's GTK4 theme gives scrollbar sliders -9px margins around a 6px+10px box, so GTK
