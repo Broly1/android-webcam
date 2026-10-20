@@ -1759,15 +1759,29 @@ fn terminate_gracefully(child: &mut Child) {
 /// then fails with "VIDIOC_G_FMT: Invalid argument" until the module is reloaded.
 /// keep_format keeps the device a valid camera between streams, which avoids that. It's a
 /// per-device control that resets when the module reloads, so set it before each launch.
+/// On 0.13+ (e.g. 0.15 on Arch) keep_format instead pins the device to its old format
+/// (640x480 BGR4 by default), so scrcpy's frames are read with the wrong layout: OBS shows
+/// garbage and browsers drop the camera. There we clear it.
 fn prepare_v4l2_sink() {
+    let keep = if v4l2loopback_needs_keep_format() { "keep_format=1" } else { "keep_format=0" };
     let ok = Command::new("v4l2-ctl")
-        .args(["-d", "/dev/video9", "-c", "keep_format=1"])
+        .args(["-d", "/dev/video9", "-c", keep])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
-    debug_log(&format!("v4l2 keep_format=1: {}", if ok { "set" } else { "not set (v4l2-ctl missing or failed)" }));
+    debug_log(&format!("v4l2 {}: {}", keep, if ok { "set" } else { "not set (v4l2-ctl missing or failed)" }));
+}
+
+/// True for v4l2loopback older than 0.13, judged from the loaded module's version.
+fn v4l2loopback_needs_keep_format() -> bool {
+    let version = fs::read_to_string("/sys/module/v4l2loopback/version").unwrap_or_default();
+    let mut parts = version.trim().split('.').map(|p| p.parse::<u32>().unwrap_or(0));
+    match (parts.next(), parts.next()) {
+        (Some(major), Some(minor)) => (major, minor) < (0, 13),
+        _ => false,
+    }
 }
 
 /// Breeze's GTK4 theme gives scrollbar sliders -9px margins around a 6px+10px box, so GTK
