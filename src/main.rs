@@ -21,7 +21,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+mod about;
+mod donate;
 mod i18n;
+mod links;
 use i18n::{fill, tr, trf};
 
 const ADB_PAIRING_SERVICE: &str = "_adb-tls-pairing._tcp.local.";
@@ -162,7 +165,6 @@ pub enum CrashCause {
 
 const APP_ID: &str = "com.android.webcam";
 const APP_ICON_PATH: &str = "/usr/share/icons/hicolor/256x256/apps/android-webcam.png";
-const DONATE_URL: &str = "https://www.paypal.com/paypalme/bmacffe";
 
 struct AppState {
     current_process: Option<Child>,
@@ -192,7 +194,13 @@ fn build_ui(app: &Application) {
         .build();
 
     install_theme_workarounds();
-    install_donate_css();
+    donate::install_css();
+
+    // Header bar with the main menu (About, License).
+    about::install_actions(&window);
+    let header = gtk4::HeaderBar::new();
+    header.pack_end(&about::menu_button());
+    window.set_titlebar(Some(&header));
 
     let config = Arc::new(Mutex::new(load_config()));
     let state = Arc::new(Mutex::new(AppState {
@@ -1081,141 +1089,12 @@ fn build_ui(app: &Application) {
         ),
     );
 
-    // Discreet donate link, bottom left on every screen.
-    let donate_box = Box::new(Orientation::Horizontal, 6);
-    // A text heart instead of an icon name: always renders, whatever icon theme the host has.
-    let heart = Label::new(Some("♥"));
-    heart.add_css_class("donate-heart");
-    donate_box.append(&heart);
-    donate_box.append(&Label::new(Some(tr("donate.button"))));
-    let donate_btn = Button::builder()
-        .child(&donate_box)
-        .halign(gtk4::Align::Start)
-        .tooltip_text(DONATE_URL)
-        .css_classes(["flat", "donate-btn"])
-        .build();
-    let w_c = window.clone();
-    donate_btn.connect_clicked(move |_| open_url(&w_c, DONATE_URL));
-    let footer = Box::new(Orientation::Horizontal, 0);
-    footer.set_margin_start(8);
-    footer.set_margin_bottom(8);
-    footer.append(&donate_btn);
-
     stack.set_vexpand(true);
     let root = Box::new(Orientation::Vertical, 0);
     root.append(&stack);
-    root.append(&footer);
+    root.append(&donate::footer(&window));
     window.set_child(Some(&root));
     window.show();
-}
-
-/// Open a link in the user's default browser. Asks the desktop portal first:
-/// it runs in the real desktop session, so it finds the browser even when GTK's
-/// own lookup can't (it can end up opening the page in a text editor). Falls
-/// back to xdg-open, and as a last resort shows the link so it can be copied.
-fn open_url(window: &ApplicationWindow, url: &'static str) {
-    let bus = match gtk4::gio::bus_get_sync(gtk4::gio::BusType::Session, None::<&gtk4::gio::Cancellable>) {
-        Ok(b) => b,
-        Err(_) => {
-            open_url_xdg(window, url);
-            return;
-        }
-    };
-    // OpenURI(s parent_window, s uri, a{sv} options)
-    let params = glib::Variant::tuple_from_iter([
-        "".to_variant(),
-        url.to_variant(),
-        glib::VariantDict::new(None).end(),
-    ]);
-    let w = window.clone();
-    bus.call(
-        Some("org.freedesktop.portal.Desktop"),
-        "/org/freedesktop/portal/desktop",
-        "org.freedesktop.portal.OpenURI",
-        "OpenURI",
-        Some(&params),
-        None,
-        gtk4::gio::DBusCallFlags::NONE,
-        10_000,
-        None::<&gtk4::gio::Cancellable>,
-        move |res| {
-            if res.is_err() {
-                open_url_xdg(&w, url);
-            }
-        },
-    );
-}
-
-fn open_url_xdg(window: &ApplicationWindow, url: &'static str) {
-    let w = window.clone();
-    let spawned = Command::new("xdg-open")
-        .arg(url)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
-    let mut child = match spawned {
-        Ok(c) => Some(c),
-        Err(_) => {
-            show_link_window(&w, url);
-            return;
-        }
-    };
-    // xdg-open exits quickly on failure, but may keep running while the
-    // browser is open, so poll for a few seconds instead of blocking.
-    let started = Instant::now();
-    glib::timeout_add_local(Duration::from_millis(200), move || {
-        let Some(c) = child.as_mut() else { return glib::ControlFlow::Break };
-        match c.try_wait() {
-            Ok(Some(status)) => {
-                if !status.success() {
-                    show_link_window(&w, url);
-                }
-            }
-            Ok(None) if started.elapsed() < Duration::from_secs(5) => {
-                return glib::ControlFlow::Continue;
-            }
-            Ok(None) => {
-                // Still running: assume the browser opened; reap it later.
-                if let Some(mut c) = child.take() {
-                    thread::spawn(move || {
-                        let _ = c.wait();
-                    });
-                }
-            }
-            Err(_) => {}
-        }
-        glib::ControlFlow::Break
-    });
-}
-
-/// Last resort when no browser could be launched: show the link, selectable.
-fn show_link_window(parent: &ApplicationWindow, url: &str) {
-    let win = Window::builder()
-        .transient_for(parent)
-        .modal(true)
-        .resizable(false)
-        .title(tr("donate.button"))
-        .build();
-    let content = Box::new(Orientation::Vertical, 12);
-    content.set_margin_all(18);
-    content.append(
-        &Label::builder()
-            .label(tr("donate.copy_link"))
-            .wrap(true)
-            .max_width_chars(40)
-            .build(),
-    );
-    content.append(&Label::builder().label(url).selectable(true).build());
-    let close_btn = Button::builder()
-        .label(tr("donate.close"))
-        .halign(gtk4::Align::End)
-        .build();
-    let w_c = win.clone();
-    close_btn.connect_clicked(move |_| w_c.close());
-    content.append(&close_btn);
-    win.set_child(Some(&content));
-    win.present();
 }
 
 /// Network devices show up in `adb devices` either as `ip:port` (adb connect)
@@ -1962,21 +1841,6 @@ fn usb_symbol() -> DrawingArea {
         let _ = cr.fill();
     });
     area
-}
-
-fn install_donate_css() {
-    let Some(display) = gdk::Display::default() else { return };
-    let provider = CssProvider::new();
-    provider.load_from_data(
-        "button.donate-btn { min-height: 0; padding: 2px 8px; font-size: 0.85em; font-weight: normal; opacity: 0.6; }
-         button.donate-btn:hover { opacity: 1; }
-         .donate-heart { color: #e01b24; }",
-    );
-    gtk4::style_context_add_provider_for_display(
-        &display,
-        &provider,
-        gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
-    );
 }
 
 trait WidgetExtFixed {

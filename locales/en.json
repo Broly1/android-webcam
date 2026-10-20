@@ -81,5 +81,18 @@
 
   "donate.button": "Donate",
   "donate.copy_link": "Could not open your web browser. You can copy the link below:",
-  "donate.close": "Close"
+  "donate.close": "Close",
+  "donate.title": "Support Android Webcam",
+  "donate.intro": "Android Webcam is free and open source. If it helped you, consider supporting its development:",
+  "donate.paypal": "Donate with PayPal",
+  "donate.pix_title": "Pix (Brazil)",
+  "donate.pix_hint": "Scan with your bank app, or copy the Pix code:",
+  "donate.copy_pix": "Copy Pix Code",
+  "donate.copied": "Copied!",
+
+  "menu.tooltip": "Main Menu",
+  "menu.about": "About Android Webcam",
+  "menu.license": "License",
+  "about.comments": "Use your Android phone as a webcam on Linux",
+  "about.built_on": "Built on"
 }
