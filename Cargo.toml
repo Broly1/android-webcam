@@ -16,7 +16,10 @@ serde_json = "1.0"
 [package.metadata.deb]
 maintainer = "Broly <jack_sparrow_xv@proton.me>"
 copyright = "2026, Broly"
-# depends = "$auto, adb, scrcpy, v4l2loopback-dkms, v4l2loopback-utils, libgtk-4-1"
+# scrcpy is only recommended: Debian 13 has it in trixie-backports (contrib) and Ubuntu 24.04's
+# 1.25 can't use the camera, so users often install the upstream release instead.
+depends = "$auto, adb, v4l2loopback-dkms, v4l-utils, psmisc, pkexec"
+recommends = "scrcpy, xdg-utils"
 section = "utils"
 priority = "optional"
 revision = "3"

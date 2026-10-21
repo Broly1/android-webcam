@@ -7,7 +7,8 @@ arch=('x86_64')
 url="https://github.com/broly/android-webcam"
 license=('GPL3')
 
-depends=('v4l2loopback-dkms' 'v4l2loopback-utils' 'gtk4' 'ffmpeg' 'sdl2' 'scrcpy' 'android-tools')
+depends=('v4l2loopback-dkms' 'v4l2loopback-utils' 'v4l-utils' 'gtk4' 'ffmpeg' 'sdl2' 'scrcpy' 'android-tools'
+         'psmisc' 'polkit' 'xdg-utils')
 makedepends=('rust' 'cargo')
 
 source=()

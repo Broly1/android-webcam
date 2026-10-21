@@ -21,10 +21,17 @@ Before installing or building, ensure your system has the necessary drivers and 
 
 ```bash
 sudo apt update
-sudo apt install v4l2loopback-dkms v4l2loopback-utils adb ffmpeg libsdl2-2.0-0
+sudo apt install v4l2loopback-dkms v4l2loopback-utils v4l-utils adb ffmpeg libsdl2-2.0-0
 ```
 
-#### Install scrcpy (Debian 13+)
+#### Install scrcpy
+
+The camera needs scrcpy 2.2 or newer.
+
+- **Ubuntu 26.04+:** `sudo apt install scrcpy`
+- **Debian 13:** it's in `trixie-backports` (`contrib` section). Add `contrib` to your
+  sources, then `sudo apt install -t trixie-backports scrcpy`
+- **Ubuntu 24.04** (its scrcpy 1.25 is too old) **or anywhere else:** install the upstream release:
 
 ```bash
 git clone https://github.com/Genymobile/scrcpy
