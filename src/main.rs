@@ -128,6 +128,12 @@ struct LaunchParams {
     background: bool,
     /// Already relaunched once because the camera was busy.
     busy_retried: bool,
+    /// Already relaunched once at this resolution after failing right at startup.
+    quick_retried: bool,
+    /// When this scrcpy was started, to tell a startup failure from a stream that broke later.
+    started: Instant,
+    /// Already reloaded v4l2loopback once because /dev/video9 stopped accepting video.
+    sink_reset: bool,
 }
 
 /// Last lines scrcpy printed (its own log plus the phone server's), used to tell why it crashed.
@@ -161,6 +167,9 @@ pub enum CrashCause {
     CameraBlocked,
     /// This PC has no audio output to play the phone's mic on (no sound server or card).
     NoAudioOutput,
+    /// /dev/video9 refuses new video (v4l2loopback before 0.13 after a stream ended with
+    /// keep_format off); only reloading the module fixes it.
+    SinkBroken,
     /// Anything else, most likely the phone can't encode this resolution.
     Other,
 }
@@ -174,6 +183,8 @@ struct AppState {
     current_output: ScrcpyOutput,
     active_serial: Option<String>,
     devices: Vec<DeviceInfo>,
+    /// When to next compare /dev/video9's format with the stream's size (None once done).
+    format_check_due: Option<Instant>,
 }
 
 fn main() {
@@ -211,6 +222,7 @@ fn build_ui(app: &Application) {
         current_output: ScrcpyOutput::default(),
         active_serial: None,
         devices: Vec::new(),
+        format_check_due: None,
     }));
 
     let is_updating_res = Arc::new(AtomicBool::new(false));
@@ -281,6 +293,13 @@ fn build_ui(app: &Application) {
 
     let res_combo = ComboBoxText::new();
 
+    // Shown while another app (OBS, a browser, Zoom) has the virtual camera open.
+    let camera_lock_label = Label::builder()
+        .use_markup(true)
+        .halign(gtk4::Align::Center)
+        .wrap(true)
+        .build();
+
     let warning_label = Label::builder()
         .use_markup(true)
         .halign(gtk4::Align::Center)
@@ -327,6 +346,7 @@ fn build_ui(app: &Application) {
     controls_box.append(&wifi_actions_box);
     controls_box.append(&wifi_action_status);
     controls_box.append(&Separator::new(Orientation::Horizontal));
+    controls_box.append(&camera_lock_label);
 
     controls_box.append(
         &Label::builder()
@@ -358,7 +378,7 @@ fn build_ui(app: &Application) {
 
     // Warning/status labels that are usually empty: hide them while empty so the box's
     // spacing doesn't leave blank gaps (themes with taller widgets need the room).
-    for label in [&wifi_action_status, &camera_warning, &warning_label] {
+    for label in [&wifi_action_status, &camera_lock_label, &camera_warning, &warning_label] {
         label.set_visible(!label.label().is_empty());
         label.connect_label_notify(|l| l.set_visible(!l.label().is_empty()));
     }
@@ -538,6 +558,12 @@ fn build_ui(app: &Application) {
                     .status();
             }
 
+            if let Some(problem) = scrcpy_problem() {
+                debug_log(&format!("scrcpy check: {}", problem));
+                status_label.set_markup(&format!("<span foreground='red'>{}</span>", esc(&problem)));
+                return;
+            }
+
             let facing = if facing_dropdown.selected() == 1 { "front" } else { "back" };
             let res = res_combo.active_text().map(|s| s.to_string()).unwrap_or_else(|| "1920x1080".into());
             let fps = if fps_dropdown.selected() == 1 { "60" } else { "30" };
@@ -562,6 +588,9 @@ fn build_ui(app: &Application) {
                 res,
                 background,
                 busy_retried: false,
+                quick_retried: false,
+                started: Instant::now(),
+                sink_reset: false,
             };
             if let Some((child, output)) = run_scrcpy(&launch) {
                 status_label.set_markup(&format!(
@@ -572,6 +601,7 @@ fn build_ui(app: &Application) {
                 s.current_process = Some(child);
                 s.current_output = output;
                 s.current_launch = Some(launch);
+                start_format_check(&mut s);
             } else {
                 status_label.set_markup(&format!("<span foreground='red'>{}</span>", esc(tr("status.failed"))));
             }
@@ -854,19 +884,43 @@ fn build_ui(app: &Application) {
     }));
 
     // Crash watchdog: if scrcpy exits on its own, find out why from its output. A busy camera
-    // gets one retry at the same resolution; anything else that isn't a camera error (e.g. the
-    // phone can't encode 4K) relaunches at 1080p, then 720p. A user Stop takes current_process
-    // first, so it isn't seen as a crash.
+    // gets one retry at the same resolution; anything else that isn't a camera error is retried
+    // at the same resolution, and only steps down (1080p, then 720p) if it keeps failing right
+    // at startup, e.g. the phone can't encode 4K. A user Stop takes current_process first, so
+    // it isn't seen as a crash. While the stream runs it also checks the virtual camera's format.
+    let mut watchdog_ticks = 0u32;
     glib::timeout_add_local(Duration::from_millis(500), glib::clone!(
-        @weak status_label, @weak res_combo, @strong state, @strong is_updating_res
+        @weak status_label, @weak res_combo, @weak facing_dropdown, @weak fps_dropdown, @weak mic_check,
+        @weak start_btn, @weak background_btn, @weak camera_lock_label, @strong state, @strong is_updating_res
             => @default-return glib::ControlFlow::Break, move || {
+            if watchdog_ticks == 0 {
+                let streaming = state.lock().unwrap().current_launch.is_some();
+                let restarts: [&gtk4::Widget; 4] = [fps_dropdown.upcast_ref(), mic_check.upcast_ref(), start_btn.upcast_ref(), background_btn.upcast_ref()];
+                update_camera_lock(&res_combo, &facing_dropdown, &restarts, streaming, &camera_lock_label);
+                watchdog_ticks = 4; // every 2 s
+            }
+            watchdog_ticks -= 1;
             let mut s = state.lock().unwrap();
             let exit = match s.current_process.as_mut().map(|child| child.try_wait()) {
                 Some(Ok(Some(status))) => Some(status.success()),
                 Some(Err(_)) => Some(false),
                 _ => None,
             };
-            let Some(clean_exit) = exit else { return glib::ControlFlow::Continue };
+            let Some(clean_exit) = exit else {
+                if s.current_process.is_none() {
+                    return glib::ControlFlow::Continue;
+                }
+                let output = s.current_output.lock().unwrap().iter().cloned().collect::<Vec<_>>().join("\n");
+                if crash_cause(&output) == CrashCause::SinkBroken {
+                    debug_log("v4l2 sink broken while running");
+                    if let Some(launch) = s.current_launch.clone() {
+                        recover_broken_sink(&mut s, &launch, &status_label);
+                    }
+                } else {
+                    check_sink_format(&mut s, &status_label);
+                }
+                return glib::ControlFlow::Continue;
+            };
             debug_log(&format!("scrcpy exited ({})", if clean_exit { "clean" } else { "error" }));
             s.current_process = None;
             let Some(launch) = s.current_launch.take() else { return glib::ControlFlow::Continue };
@@ -903,6 +957,10 @@ fn build_ui(app: &Application) {
                     fail(tr("status.no_audio_output"));
                     return glib::ControlFlow::Continue;
                 }
+                CrashCause::SinkBroken => {
+                    recover_broken_sink(&mut s, &launch, &status_label);
+                    return glib::ControlFlow::Continue;
+                }
                 CrashCause::CameraBusy if launch.busy_retried => {
                     fail(tr("status.camera_busy"));
                     return glib::ControlFlow::Continue;
@@ -913,14 +971,25 @@ fn build_ui(app: &Application) {
                     (LaunchParams { busy_retried: true, ..launch.clone() }, tr("status.camera_busy_retry").to_string())
                 }
                 CrashCause::Other => {
-                    let Some(fallback) = next_fallback_resolution(&launch.res) else {
-                        fail(&trf("status.crashed", &[("res", &launch.res)]));
-                        return glib::ControlFlow::Continue;
-                    };
-                    let notice = trf("status.relaunched", &[("res", &launch.res), ("fallback", fallback)]);
-                    (LaunchParams { res: fallback.to_string(), ..launch.clone() }, notice)
+                    let ran_for = launch.started.elapsed();
+                    debug_log(&format!("ran for {:.1}s, quick_retried={}", ran_for.as_secs_f32(), launch.quick_retried));
+                    match after_other_crash(&launch.res, ran_for, launch.quick_retried) {
+                        OtherCrashAction::RetrySame => {
+                            let notice = trf("status.restarting", &[("res", &launch.res)]);
+                            (LaunchParams { quick_retried: ran_for < STARTUP_WINDOW, ..launch.clone() }, notice)
+                        }
+                        OtherCrashAction::Lower(fallback) => {
+                            let notice = trf("status.relaunched", &[("res", &launch.res), ("fallback", fallback)]);
+                            (LaunchParams { res: fallback.to_string(), quick_retried: false, ..launch.clone() }, notice)
+                        }
+                        OtherCrashAction::GiveUp => {
+                            fail(&trf("status.crashed", &[("res", &launch.res)]));
+                            return glib::ControlFlow::Continue;
+                        }
+                    }
                 }
             };
+            let retry = LaunchParams { started: Instant::now(), ..retry };
 
             let fallback = (retry.res != launch.res).then(|| retry.res.clone());
             match run_scrcpy(&retry) {
@@ -933,6 +1002,7 @@ fn build_ui(app: &Application) {
                         esc(&stream_details(&retry))
                     ));
                     s.current_launch = Some(retry);
+                    start_format_check(&mut s);
                 }
                 None => fail(tr("status.failed")),
             }
@@ -1568,6 +1638,230 @@ fn refresh_resolutions(
     is_updating.store(false, Ordering::SeqCst);
 }
 
+/// A failure this soon after launch is a startup failure (e.g. the phone can't encode that
+/// size); later, the stream was running and something interrupted it.
+const STARTUP_WINDOW: Duration = Duration::from_secs(10);
+
+/// What to do after scrcpy fails for a reason crash_cause doesn't recognise.
+#[derive(Debug, PartialEq, Eq)]
+pub enum OtherCrashAction {
+    RetrySame,
+    Lower(&'static str),
+    GiveUp,
+}
+
+/// A stream that ran for a while and then broke was interrupted (the phone's camera or
+/// encoder hiccuped), so it's restarted as is rather than losing resolution for the session.
+/// A startup failure gets one more try at the same size, then steps down.
+pub fn after_other_crash(res: &str, ran_for: Duration, quick_retried: bool) -> OtherCrashAction {
+    if ran_for >= STARTUP_WINDOW || !quick_retried {
+        OtherCrashAction::RetrySame
+    } else {
+        next_fallback_resolution(res).map_or(OtherCrashAction::GiveUp, OtherCrashAction::Lower)
+    }
+}
+
+/// First check of /dev/video9's format after a launch, then every FORMAT_CHECK_INTERVAL until
+/// FORMAT_CHECK_TIMEOUT. A stuck format is only reported after FORMAT_STUCK_AFTER, so scrcpy
+/// has had time to set its own.
+const FORMAT_CHECK_DELAY: Duration = Duration::from_secs(1);
+const FORMAT_CHECK_INTERVAL: Duration = Duration::from_secs(1);
+const FORMAT_STUCK_AFTER: Duration = Duration::from_secs(8);
+const FORMAT_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Starts the format checks for a stream that was just launched.
+fn start_format_check(s: &mut AppState) {
+    s.format_check_due = Some(Instant::now() + FORMAT_CHECK_DELAY);
+}
+
+/// v4l2loopback can't change /dev/video9's format while another app (OBS, a browser) has it
+/// open, so after a resolution change that app gets frames of the wrong size: a green or
+/// scrambled picture. Once the stream is up, compare the device's size with ours and, if it's
+/// stuck, say which app is holding it.
+fn check_sink_format(s: &mut AppState, status_label: &Label) {
+    let Some(due) = s.format_check_due else { return };
+    if Instant::now() < due {
+        return;
+    }
+    let Some(launch) = s.current_launch.as_ref() else {
+        s.format_check_due = None;
+        return;
+    };
+    let ran_for = launch.started.elapsed();
+    let size = v4l2_sink_size();
+    if size.as_deref() == Some(launch.res.as_str()) {
+        debug_log(&format!("v4l2 format {} matches the stream", launch.res));
+        s.format_check_due = None;
+        return;
+    }
+    if let Some(current) = size.filter(|_| ran_for >= FORMAT_STUCK_AFTER) {
+        let holders = v4l2_sink_holders();
+        debug_log(&format!("v4l2 format stuck at {} (stream {}), held by {:?}", current, launch.res, holders));
+        if holders.is_empty() {
+            // Nobody else has it open, so the module itself kept the old size (v4l2loopback
+            // before 0.13, e.g. the app that held it closed just before this launch).
+            s.format_check_due = None;
+            let version = fs::read_to_string("/sys/module/v4l2loopback/version").ok();
+            if v4l2loopback_is_old(version.as_deref()) && !launch.sink_reset {
+                let launch = launch.clone();
+                recover_broken_sink(s, &launch, status_label);
+            }
+            return;
+        }
+        let msg = trf("status.format_stuck", &[("apps", &holders.join(", ")), ("current", &current), ("res", &launch.res)]);
+        status_label.set_markup(&format!(
+            "<span foreground='#ffa500'>{}</span>\n<span foreground='green'>{}</span>",
+            esc(&msg),
+            esc(&stream_details(launch))
+        ));
+        s.format_check_due = None;
+        return;
+    }
+    s.format_check_due = (ran_for < FORMAT_CHECK_TIMEOUT).then(|| Instant::now() + FORMAT_CHECK_INTERVAL);
+}
+
+/// /dev/video9 stopped accepting video (see CrashCause::SinkBroken). Reload v4l2loopback (one
+/// password prompt) and relaunch, once. The module can't be unloaded while another app has
+/// the camera open, so then just say which app to close.
+fn recover_broken_sink(s: &mut AppState, launch: &LaunchParams, status_label: &Label) {
+    let fail = |msg: &str| status_label.set_markup(&format!("<span foreground='red'>{}</span>", esc(msg)));
+    stop_stream(s);
+    if launch.sink_reset {
+        fail(tr("status.sink_reset_failed"));
+        return;
+    }
+    thread::sleep(Duration::from_millis(300)); // let the killed scrcpy release the device
+    let holders = v4l2_sink_holders();
+    if !holders.is_empty() {
+        debug_log(&format!("v4l2 sink broken, can't reload: held by {:?}", holders));
+        fail(&trf("status.sink_busy", &[("apps", &holders.join(", "))]));
+        return;
+    }
+    if !reload_v4l2loopback() {
+        fail(tr("status.sink_reset_failed"));
+        return;
+    }
+    let retry = LaunchParams { sink_reset: true, started: Instant::now(), ..launch.clone() };
+    match run_scrcpy(&retry) {
+        Some((child, output)) => {
+            status_label.set_markup(&format!(
+                "<span foreground='#ffa500'>{}</span>\n<span foreground='green'>{}</span>",
+                esc(tr("status.sink_reset_done")),
+                esc(&stream_details(&retry))
+            ));
+            s.current_process = Some(child);
+            s.current_output = output;
+            s.current_launch = Some(retry);
+            start_format_check(s);
+        }
+        None => fail(tr("status.failed")),
+    }
+}
+
+/// /dev/video9's current capture size as "WIDTHxHEIGHT", or None if it has no format yet.
+fn v4l2_sink_size() -> Option<String> {
+    let out = Command::new("v4l2-ctl").args(["-d", "/dev/video9", "--get-fmt-video"]).output().ok()?;
+    parse_v4l2_size(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// Reads "Width/Height      : 1920/1080" from `v4l2-ctl --get-fmt-video`.
+pub fn parse_v4l2_size(text: &str) -> Option<String> {
+    let value = text.lines().find_map(|l| l.trim().strip_prefix("Width/Height"))?;
+    let (w, h) = value.trim_start_matches([' ', ':']).trim().split_once('/')?;
+    let (w, h): (u32, u32) = (w.trim().parse().ok()?, h.trim().parse().ok()?);
+    Some(format!("{}x{}", w, h))
+}
+
+/// v4l2loopback can't change the camera's size while another app has it open, so while one
+/// does, resolution and camera (front/back, whose sizes differ) are locked with a note. While
+/// that app is receiving our stream, everything that restarts the stream (FPS, mic, Start,
+/// Launch in Background) is locked too: a restart cuts its video (a browser drops the camera).
+/// Stop stays available.
+fn update_camera_lock(
+    res_combo: &ComboBoxText,
+    facing_dropdown: &DropDown,
+    restarts: &[&gtk4::Widget],
+    streaming: bool,
+    lock_label: &Label,
+) {
+    let holders = v4l2_sink_holders();
+    let locked = !holders.is_empty();
+    let lock_restarts = locked && streaming;
+    if res_combo.is_sensitive() == locked || restarts.first().is_some_and(|w| w.is_sensitive() == lock_restarts) {
+        debug_log(&format!("camera lock: {}", match (locked, lock_restarts) {
+            (false, _) => "off".to_string(),
+            (true, false) => format!("resolution/camera, held by {:?}", holders),
+            (true, true) => format!("all settings and launch, streaming to {:?}", holders),
+        }));
+    }
+    res_combo.set_sensitive(!locked);
+    facing_dropdown.set_sensitive(!locked);
+    for widget in restarts {
+        widget.set_sensitive(!lock_restarts);
+    }
+    if locked {
+        let key = if lock_restarts { "camera.locked_streaming" } else { "camera.locked" };
+        let msg = trf(key, &[("apps", &holders.join(", "))]);
+        lock_label.set_markup(&format!("<span foreground='#ffa500' size='small'>{}</span>", esc(&msg)));
+    } else {
+        lock_label.set_text("");
+    }
+}
+
+/// Names of the apps (other than scrcpy and us) that have /dev/video9 open, from /proc.
+fn v4l2_sink_holders() -> Vec<String> {
+    let me = std::process::id().to_string();
+    let mut names = Vec::new();
+    let Ok(procs) = fs::read_dir("/proc") else { return names };
+    for proc_dir in procs.flatten() {
+        let pid = proc_dir.file_name().to_string_lossy().to_string();
+        if pid == me || !pid.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(fds) = fs::read_dir(proc_dir.path().join("fd")) else { continue };
+        let holds = fds.flatten().any(|fd| fs::read_link(fd.path()).is_ok_and(|t| t == Path::new("/dev/video9")));
+        if !holds {
+            continue;
+        }
+        let status = fs::read_to_string(proc_dir.path().join("status")).unwrap_or_default();
+        if status.lines().any(|l| l.strip_prefix("PPid:").is_some_and(|p| p.trim() == me)) {
+            continue; // scrcpy and v4l2-ctl, run by us
+        }
+        let comm = fs::read_to_string(proc_dir.path().join("comm")).unwrap_or_default().trim().to_string();
+        let name = match comm.as_str() {
+            "scrcpy" | "" => continue,
+            "obs" => "OBS".to_string(),
+            other => other.to_string(),
+        };
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
+/// Camera mode needs scrcpy 2.2+. Returns what to tell the user if scrcpy is missing or older
+/// (e.g. Ubuntu 24.04 packages 1.25), instead of letting every launch fail as a "crash".
+fn scrcpy_problem() -> Option<String> {
+    let Ok(out) = Command::new("scrcpy").arg("--version").output() else {
+        return Some(tr("status.scrcpy_missing").to_string());
+    };
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    match parse_scrcpy_version(&text) {
+        Some((major, minor)) if (major, minor) < (2, 2) => {
+            Some(trf("status.scrcpy_too_old", &[("version", &format!("{}.{}", major, minor))]))
+        }
+        _ => None,
+    }
+}
+
+/// Reads "scrcpy 5.0.1 <https://github.com/Genymobile/scrcpy>" as (5, 0).
+pub fn parse_scrcpy_version(text: &str) -> Option<(u32, u32)> {
+    let version = text.lines().find_map(|l| l.trim().strip_prefix("scrcpy "))?.split_whitespace().next()?;
+    let mut parts = version.split('.').map(|p| p.parse::<u32>().ok());
+    Some((parts.next()??, parts.next().flatten().unwrap_or(0)))
+}
+
 /// Next resolution to try after a crash: anything above 1080p drops to 1080p, then 720p.
 pub fn next_fallback_resolution(res: &str) -> Option<&'static str> {
     let (w, h) = res.split_once('x')?;
@@ -1600,6 +1894,8 @@ pub fn crash_cause(output: &str) -> CrashCause {
     ];
     // SDL's error when scrcpy can't open a playback device for the mic.
     const NO_AUDIO: &[&str] = &["could not open audio device"];
+    // FFmpeg's v4l2 output failing on the device itself (scrcpy keeps running, with no video).
+    const SINK_BROKEN: &[&str] = &["failed to write header to /dev/video9"];
     let out = output.to_lowercase();
     if BUSY.iter().any(|p| out.contains(p)) {
         CrashCause::CameraBusy
@@ -1607,6 +1903,8 @@ pub fn crash_cause(output: &str) -> CrashCause {
         CrashCause::CameraBlocked
     } else if NO_AUDIO.iter().any(|p| out.contains(p)) {
         CrashCause::NoAudioOutput
+    } else if SINK_BROKEN.iter().any(|p| out.contains(p)) {
+        CrashCause::SinkBroken
     } else {
         CrashCause::Other
     }
@@ -1646,7 +1944,7 @@ fn stream_details(launch: &LaunchParams) -> String {
 }
 
 fn run_scrcpy(launch: &LaunchParams) -> Option<(Child, ScrcpyOutput)> {
-    prepare_v4l2_sink();
+    prepare_v4l2_sink(&launch.res);
     let mut args = vec![
         "--video-source=camera".into(),
         format!("--camera-facing={}", launch.facing),
@@ -1705,6 +2003,8 @@ fn stop_stream(s: &mut AppState) {
         terminate_gracefully(&mut child);
     }
     s.current_launch = None;
+    s.format_check_due = None;
+    s.current_output = ScrcpyOutput::default();
     kill_scrcpy();
     stop_phone_server(s.active_serial.as_deref());
 }
@@ -1765,34 +2065,80 @@ fn terminate_gracefully(child: &mut Child) {
     let _ = child.wait();
 }
 
-/// v4l2loopback before 0.13 (e.g. 0.12.7 on Ubuntu 24.04) breaks if an app (a browser
-/// listing cameras, OBS) opens the device while nothing is streaming: every later stream
-/// then fails with "VIDIOC_G_FMT: Invalid argument" until the module is reloaded.
-/// keep_format keeps the device a valid camera between streams, which avoids that. It's a
-/// per-device control that resets when the module reloads, so set it before each launch.
-/// On 0.13+ (e.g. 0.15 on Arch) keep_format instead pins the device to its old format
-/// (640x480 BGR4 by default), so scrcpy's frames are read with the wrong layout: OBS shows
-/// garbage and browsers drop the camera. There we clear it.
-fn prepare_v4l2_sink() {
-    let keep = if v4l2loopback_needs_keep_format() { "keep_format=1" } else { "keep_format=0" };
+/// v4l2loopback's keep_format control makes the device keep its format after the writer
+/// leaves, and the right setting depends on the module version:
+/// - before 0.13 (Ubuntu 24.04's 0.12.7, built-in or DKMS; it reports no version): with it
+///   off, the device refuses every stream after the first ("VIDIOC_G_FMT: Invalid argument")
+///   until the module is reloaded. Turning it off between streams breaks it the same way. So
+///   it stays on, and since the kept size can't change, picking another resolution reloads the
+///   module first (one password prompt). Restarts at the same size need nothing.
+/// - 0.13 and later: with it on, the device keeps a stale format (640x480 BGR4 by default)
+///   that the next stream can't replace, so scrcpy's frames are read with the wrong layout. Off.
+fn prepare_v4l2_sink(res: &str) {
+    let version = fs::read_to_string("/sys/module/v4l2loopback/version").ok();
+    if !v4l2loopback_is_old(version.as_deref()) {
+        set_v4l2_keep_format(false);
+        return;
+    }
+    if let Some(current) = v4l2_sink_size().filter(|size| size != res) {
+        let holders = v4l2_sink_holders();
+        if holders.is_empty() {
+            debug_log(&format!("old v4l2loopback keeps {}, reloading it for {}", current, res));
+            reload_v4l2loopback();
+        } else {
+            debug_log(&format!("old v4l2loopback keeps {}, can't reload: held by {:?}", current, holders));
+        }
+    }
+    set_v4l2_keep_format(true);
+}
+
+/// v4l2loopback before 0.13, from /sys/module/v4l2loopback/version. Ubuntu's 0.12.7 builds
+/// don't report a version, while 0.13+ do, so no version counts as old.
+pub fn v4l2loopback_is_old(version: Option<&str>) -> bool {
+    let Some(version) = version else { return true };
+    let mut parts = version.trim().split('.').map(|p| p.parse::<u32>().ok());
+    match (parts.next().flatten(), parts.next().flatten()) {
+        (Some(major), Some(minor)) => (major, minor) < (0, 13),
+        _ => true,
+    }
+}
+
+/// Unloads and reloads v4l2loopback (one password prompt), which resets /dev/video9. Fails if
+/// an app still has the camera open.
+fn reload_v4l2loopback() -> bool {
+    let ok = Command::new("pkexec")
+        .args(["sh", "-c", "modprobe -r v4l2loopback && modprobe v4l2loopback video_nr=9 card_label=Android-Webcam exclusive_caps=1"])
+        .status()
+        .map(|st| st.success())
+        .unwrap_or(false);
+    debug_log(&format!("v4l2loopback reload: {}", if ok { "done" } else { "failed or cancelled" }));
+    // The new /dev/video9 only becomes usable once udev has set its permissions.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while ok && Instant::now() < deadline {
+        let ready = Command::new("v4l2-ctl")
+            .args(["-d", "/dev/video9", "--get-ctrl", "keep_format"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|st| st.success());
+        if ready {
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    ok
+}
+
+fn set_v4l2_keep_format(on: bool) {
+    let arg = if on { "keep_format=1" } else { "keep_format=0" };
     let ok = Command::new("v4l2-ctl")
-        .args(["-d", "/dev/video9", "-c", keep])
+        .args(["-d", "/dev/video9", "-c", arg])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
-    debug_log(&format!("v4l2 {}: {}", keep, if ok { "set" } else { "not set (v4l2-ctl missing or failed)" }));
-}
-
-/// True for v4l2loopback older than 0.13, judged from the loaded module's version.
-fn v4l2loopback_needs_keep_format() -> bool {
-    let version = fs::read_to_string("/sys/module/v4l2loopback/version").unwrap_or_default();
-    let mut parts = version.trim().split('.').map(|p| p.parse::<u32>().unwrap_or(0));
-    match (parts.next(), parts.next()) {
-        (Some(major), Some(minor)) => (major, minor) < (0, 13),
-        _ => false,
-    }
+    debug_log(&format!("v4l2 {}: {}", arg, if ok { "set" } else { "not set (v4l2-ctl missing or failed)" }));
 }
 
 /// Breeze's GTK4 theme gives scrollbar sliders -9px margins around a 6px+10px box, so GTK
@@ -1953,7 +2299,54 @@ mod tests {
             crash_cause("ERROR: Could not open audio device: ALSA: Couldn't open audio device: No such file or directory\nERROR: Demuxer error"),
             CrashCause::NoAudioOutput
         );
+        // Ubuntu 24.04 (v4l2loopback 0.12.7) after a stream ended with keep_format off.
+        assert_eq!(
+            crash_cause("[scrcpy] ERROR: [FFmpeg] ioctl(VIDIOC_G_FMT): Invalid argument\n[scrcpy] ERROR: Failed to write header to /dev/video9\nWARN: Could not send packet to v4l2 sink"),
+            CrashCause::SinkBroken
+        );
         assert_eq!(crash_cause(""), CrashCause::Other);
+    }
+
+    #[test]
+    fn test_v4l2loopback_is_old() {
+        assert!(!v4l2loopback_is_old(Some("0.15.4\n"))); // Arch
+        assert!(!v4l2loopback_is_old(Some("0.15.0"))); // Debian 13
+        assert!(!v4l2loopback_is_old(Some("0.13.2"))); // bookworm-backports
+        assert!(v4l2loopback_is_old(Some("0.12.7")));
+        assert!(v4l2loopback_is_old(None)); // Ubuntu 24.04's 0.12.7 reports no version
+        assert!(v4l2loopback_is_old(Some("")));
+    }
+
+    #[test]
+    fn test_after_other_crash() {
+        let quick = Duration::from_secs(1);
+        let long = Duration::from_secs(62);
+        // First startup failure: one more try at the same size.
+        assert_eq!(after_other_crash("1920x1080", quick, false), OtherCrashAction::RetrySame);
+        // Fails at startup again: step down.
+        assert_eq!(after_other_crash("1920x1080", quick, true), OtherCrashAction::Lower("1280x720"));
+        assert_eq!(after_other_crash("3840x2160", quick, true), OtherCrashAction::Lower("1920x1080"));
+        assert_eq!(after_other_crash("1280x720", quick, true), OtherCrashAction::GiveUp);
+        // Ran fine for a minute, then broke (OnePlus 8T at 720p): restart as is.
+        assert_eq!(after_other_crash("1280x720", long, true), OtherCrashAction::RetrySame);
+        assert_eq!(after_other_crash("1920x1080", long, false), OtherCrashAction::RetrySame);
+    }
+
+    #[test]
+    fn test_parse_v4l2_size() {
+        let fmt = "Format Video Capture:\n\tWidth/Height      : 1920/1080\n\tPixel Format      : 'YU12' (Planar YUV 4:2:0)";
+        assert_eq!(parse_v4l2_size(fmt).as_deref(), Some("1920x1080"));
+        assert_eq!(parse_v4l2_size("VIDIOC_G_FMT: failed: Invalid argument"), None);
+        assert_eq!(parse_v4l2_size(""), None);
+    }
+
+    #[test]
+    fn test_parse_scrcpy_version() {
+        assert_eq!(parse_scrcpy_version("scrcpy 5.0.1 <https://github.com/Genymobile/scrcpy>\n\nDependencies (compiled / linked):"), Some((5, 0)));
+        assert_eq!(parse_scrcpy_version("scrcpy 3.3.4 <https://github.com/Genymobile/scrcpy>"), Some((3, 3)));
+        // Ubuntu 24.04's package: too old for --video-source=camera.
+        assert_eq!(parse_scrcpy_version("scrcpy 1.25 <https://github.com/Genymobile/scrcpy>"), Some((1, 25)));
+        assert_eq!(parse_scrcpy_version("bash: scrcpy: command not found"), None);
     }
 
     #[test]
