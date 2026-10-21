@@ -159,6 +159,8 @@ pub enum CrashCause {
     CameraBusy,
     /// Camera privacy toggle or device policy.
     CameraBlocked,
+    /// This PC has no audio output to play the phone's mic on (no sound server or card).
+    NoAudioOutput,
     /// Anything else, most likely the phone can't encode this resolution.
     Other,
 }
@@ -896,6 +898,11 @@ fn build_ui(app: &Application) {
                     fail(tr("status.camera_blocked"));
                     return glib::ControlFlow::Continue;
                 }
+                // Not the resolution's fault: retrying lower would fail the same way.
+                CrashCause::NoAudioOutput => {
+                    fail(tr("status.no_audio_output"));
+                    return glib::ControlFlow::Continue;
+                }
                 CrashCause::CameraBusy if launch.busy_retried => {
                     fail(tr("status.camera_busy"));
                     return glib::ControlFlow::Continue;
@@ -1591,11 +1598,15 @@ pub fn crash_cause(output: &str) -> CrashCause {
         "disabled due to a device policy",
         "sensor privacy",
     ];
+    // SDL's error when scrcpy can't open a playback device for the mic.
+    const NO_AUDIO: &[&str] = &["could not open audio device"];
     let out = output.to_lowercase();
     if BUSY.iter().any(|p| out.contains(p)) {
         CrashCause::CameraBusy
     } else if BLOCKED.iter().any(|p| out.contains(p)) {
         CrashCause::CameraBlocked
+    } else if NO_AUDIO.iter().any(|p| out.contains(p)) {
+        CrashCause::NoAudioOutput
     } else {
         CrashCause::Other
     }
@@ -1936,6 +1947,11 @@ mod tests {
         assert_eq!(
             crash_cause("[server] ERROR: Encoding error: android.media.MediaCodec$CodecException: Error 0xfffffc0e"),
             CrashCause::Other
+        );
+        // Ubuntu 26.04 VM with no sound card, mic forwarding on.
+        assert_eq!(
+            crash_cause("ERROR: Could not open audio device: ALSA: Couldn't open audio device: No such file or directory\nERROR: Demuxer error"),
+            CrashCause::NoAudioOutput
         );
         assert_eq!(crash_cause(""), CrashCause::Other);
     }

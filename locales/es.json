@@ -40,6 +40,7 @@
   "status.camera_busy_retry": "⚠️ Cámara ocupada, reintentando...",
   "status.camera_busy": "● Otra aplicación está usando la cámara del teléfono. Ciérrala y pulsa Iniciar de nuevo.",
   "status.camera_blocked": "● El teléfono bloqueó el acceso a la cámara. Revisa el interruptor de privacidad de la cámara en Ajustes rápidos.",
+  "status.no_audio_output": "● Este PC no tiene salida de audio para reproducir el micrófono del teléfono. Activa \"Bloquear micrófono del teléfono\" o inicia tu servidor de sonido y pulsa Iniciar de nuevo.",
 
   "waiting.title": "Esperando dispositivo Android...",
   "waiting.hint": "Conecta tu teléfono por USB con la Depuración USB activada, o conéctalo de forma inalámbrica por Wi-Fi abajo:",

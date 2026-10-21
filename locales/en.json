@@ -40,6 +40,7 @@
   "status.camera_busy_retry": "⚠️ Camera busy, retrying...",
   "status.camera_busy": "● The phone's camera is in use by another app. Close it and press Launch again.",
   "status.camera_blocked": "● The phone blocked camera access. Check the camera privacy toggle in Quick Settings.",
+  "status.no_audio_output": "● This PC has no audio output to play the phone's microphone. Turn on \"Block Phone Microphone\" or start your sound server, then press Launch again.",
 
   "waiting.title": "Waiting for Android Device...",
   "waiting.hint": "Connect your phone via USB with USB Debugging enabled, or connect wirelessly over Wi-Fi below:",
