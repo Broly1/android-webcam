@@ -203,10 +203,13 @@ fn build_ui(app: &Application) {
         .application(app)
         .title(tr("app.title"))
         .default_width(380)
-        .default_height(640)
+        // Fixed size: the window always fits its content (GTK sizes a non-resizable window to
+        // it), growing for the camera lock note and shrinking back when it goes.
+        .resizable(false)
         .build();
 
     install_theme_workarounds();
+    install_css();
     donate::install_css();
 
     // Header bar with the main menu (About, License).
@@ -239,6 +242,7 @@ fn build_ui(app: &Application) {
     // ==========================================
     let controls_box = Box::new(Orientation::Vertical, 10);
     controls_box.set_margin_all(18);
+    controls_box.set_margin_bottom(4); // the buttons follow right below, outside the scroll
 
     let device_label = Label::builder()
         .use_markup(true)
@@ -307,13 +311,15 @@ fn build_ui(app: &Application) {
         .build();
 
     let fps_dropdown = DropDown::from_strings(&["30", "60"]);
+    fps_dropdown.set_halign(gtk4::Align::Start); // just wide enough for "60", not the full row
     fps_dropdown.set_selected(config.lock().unwrap().fps_index);
 
     let mic_check = CheckButton::with_label(tr("mic.block"));
     mic_check.set_active(config.lock().unwrap().block_mic);
 
-    let button_box = Box::new(Orientation::Vertical, 10);
-    let launch_row = Box::new(Orientation::Horizontal, 10);
+    // Launch, Launch in Background and Stop share one compact row.
+    let button_box = Box::new(Orientation::Vertical, 0);
+    let launch_row = Box::new(Orientation::Horizontal, 6);
     launch_row.set_homogeneous(true);
 
     let start_btn = Button::builder()
@@ -331,8 +337,12 @@ fn build_ui(app: &Application) {
 
     launch_row.append(&start_btn);
     launch_row.append(&background_btn);
+    launch_row.append(&stop_btn);
     button_box.append(&launch_row);
-    button_box.append(&stop_btn);
+    for btn in [&start_btn, &background_btn, &stop_btn] {
+        btn.add_css_class("stream-btn");
+    }
+    stop_btn.set_sensitive(false); // lit only while a stream runs (see the crash watchdog)
 
     let status_label = Label::builder()
         .label(tr("status.ready"))
@@ -374,7 +384,6 @@ fn build_ui(app: &Application) {
     );
     controls_box.append(&fps_dropdown);
     controls_box.append(&mic_check);
-    controls_box.append(&button_box);
 
     // Warning/status labels that are usually empty: hide them while empty so the box's
     // spacing doesn't leave blank gaps (themes with taller widgets need the room).
@@ -383,20 +392,36 @@ fn build_ui(app: &Application) {
         label.connect_label_notify(|l| l.set_visible(!l.label().is_empty()));
     }
 
+    // Scrolling is only a fallback for screens shorter than the window.
     let scrolled_controls = ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::Never)
         .vscrollbar_policy(PolicyType::Automatic)
-        .vexpand(true)
+        .propagate_natural_height(true)
         .child(&controls_box)
         .build();
 
-    // The status line sits outside the scrolled area so it's always visible, even when
-    // a theme with taller widgets makes the controls overflow the window.
+    // The buttons and the status line sit outside the scrolled area so they're always fully
+    // visible, even when a theme with taller widgets makes the settings overflow the window.
+    button_box.set_margin_start(18);
+    button_box.set_margin_end(18);
+    button_box.set_margin_top(2);
     status_label.set_margin_start(18);
     status_label.set_margin_end(18);
     status_label.set_margin_top(6);
+    // Room for three lines from the start ("Stream Active", the stream details, a notice), so
+    // the status growing when a stream starts doesn't shrink the controls and hide Stop for a
+    // moment. Measured once realized, with the theme's caption font.
+    status_label.connect_realize(|label| {
+        let (_, three_lines) = label.create_pango_layout(Some("A\nA\nA")).pixel_size();
+        label.set_size_request(-1, three_lines);
+    });
+    // The settings take the height they need and the buttons follow right below; spare height
+    // goes under the status line rather than between the settings and the buttons.
+    status_label.set_vexpand(true);
+    status_label.set_valign(gtk4::Align::Start);
     let controls_page = Box::new(Orientation::Vertical, 0);
     controls_page.append(&scrolled_controls);
+    controls_page.append(&button_box);
     controls_page.append(&status_label);
 
     // ==========================================
@@ -546,7 +571,7 @@ fn build_ui(app: &Application) {
 
     // Launch (with or without the scrcpy window)
     let apply_changes = glib::clone!(
-        @weak facing_dropdown, @weak res_combo, @weak fps_dropdown, @weak mic_check, @weak status_label, @strong state, @strong config => move |background: bool| {
+        @weak facing_dropdown, @weak res_combo, @weak fps_dropdown, @weak mic_check, @weak status_label, @weak stop_btn, @strong state, @strong config => move |background: bool| {
             let mut s = state.lock().unwrap();
 
             stop_stream(&mut s);
@@ -602,6 +627,7 @@ fn build_ui(app: &Application) {
                 s.current_output = output;
                 s.current_launch = Some(launch);
                 start_format_check(&mut s);
+                stop_btn.set_sensitive(true);
             } else {
                 status_label.set_markup(&format!("<span foreground='red'>{}</span>", esc(tr("status.failed"))));
             }
@@ -868,11 +894,12 @@ fn build_ui(app: &Application) {
     ));
 
     // Stop button
-    stop_btn.connect_clicked(glib::clone!(@strong state, @weak status_label => move |_| {
+    stop_btn.connect_clicked(glib::clone!(@strong state, @weak status_label => move |btn| {
         if let Ok(mut s) = state.lock() {
             stop_stream(&mut s);
             status_label.set_text(tr("status.stopped"));
         }
+        btn.set_sensitive(false);
     }));
 
     // Clean exit on window close
@@ -891,8 +918,9 @@ fn build_ui(app: &Application) {
     let mut watchdog_ticks = 0u32;
     glib::timeout_add_local(Duration::from_millis(500), glib::clone!(
         @weak status_label, @weak res_combo, @weak facing_dropdown, @weak fps_dropdown, @weak mic_check,
-        @weak start_btn, @weak background_btn, @weak camera_lock_label, @strong state, @strong is_updating_res
+        @weak start_btn, @weak background_btn, @weak stop_btn, @weak camera_lock_label, @strong state, @strong is_updating_res
             => @default-return glib::ControlFlow::Break, move || {
+            stop_btn.set_sensitive(state.lock().unwrap().current_launch.is_some());
             if watchdog_ticks == 0 {
                 let streaming = state.lock().unwrap().current_launch.is_some();
                 let restarts: [&gtk4::Widget; 4] = [fps_dropdown.upcast_ref(), mic_check.upcast_ref(), start_btn.upcast_ref(), background_btn.upcast_ref()];
@@ -2139,6 +2167,14 @@ fn set_v4l2_keep_format(on: bool) {
         .map(|s| s.success())
         .unwrap_or(false);
     debug_log(&format!("v4l2 {}: {}", arg, if ok { "set" } else { "not set (v4l2-ctl missing or failed)" }));
+}
+
+/// Smaller stream buttons, so the three fit in one row.
+fn install_css() {
+    let Some(display) = gdk::Display::default() else { return };
+    let provider = CssProvider::new();
+    provider.load_from_data("button.stream-btn { min-height: 0; padding: 4px 6px; }");
+    gtk4::style_context_add_provider_for_display(&display, &provider, gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION);
 }
 
 /// Breeze's GTK4 theme gives scrollbar sliders -9px margins around a 6px+10px box, so GTK

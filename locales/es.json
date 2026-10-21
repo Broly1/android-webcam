@@ -25,7 +25,7 @@
   "mic.block": "Bloquear micrófono del teléfono",
 
   "stream.launch": "🚀 Iniciar",
-  "stream.launch_background": "🌙 Iniciar en segundo plano",
+  "stream.launch_background": "🌙 Segundo plano",
   "stream.launch_background_tooltip": "Transmitir a la cámara web virtual sin la ventana de vista previa (para OBS, Zoom, etc.)",
   "stream.stop": "🛑 Detener",
   "status.ready": "Listo",

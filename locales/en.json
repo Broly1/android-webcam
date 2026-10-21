@@ -25,7 +25,7 @@
   "mic.block": "Block Phone Microphone",
 
   "stream.launch": "🚀 Launch",
-  "stream.launch_background": "🌙 Launch in Background",
+  "stream.launch_background": "🌙 Background",
   "stream.launch_background_tooltip": "Stream to the virtual webcam without the preview window (for OBS, Zoom, etc.)",
   "stream.stop": "🛑 Stop",
   "status.ready": "Ready",
