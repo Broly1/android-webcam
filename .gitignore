@@ -11,6 +11,8 @@ Cargo.lock
 
 # Arch packaging results
 *.pkg.tar.zst
+arch-configs/pkg/
+arch-configs/src/
 
 # Linux system/Editor swap files
 *~
