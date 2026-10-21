@@ -15,6 +15,14 @@ sudo apt update
 sudo apt install v4l2loopback-dkms v4l2loopback-utils v4l-utils adb ffmpeg libsdl2-2.0-0
 ```
 
+Instale também o meta-pacote de headers do kernel, para que o v4l2loopback seja recompilado a
+cada atualização do kernel (sem ele a câmera some depois da próxima atualização):
+
+```bash
+sudo apt install linux-headers-generic   # Ubuntu / Mint
+sudo apt install linux-headers-amd64     # Debian
+```
+
 #### Instalar scrcpy
 
 A câmera precisa do scrcpy 2.2 ou mais recente.
