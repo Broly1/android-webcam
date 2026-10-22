@@ -41,7 +41,7 @@ fn show_about(parent: &ApplicationWindow) {
         .modal(true)
         .program_name(tr("app.title"))
         .logo_icon_name("android-webcam")
-        .version(env!("CARGO_PKG_VERSION"))
+        .version(env!("APP_VERSION"))
         .comments(tr("about.comments"))
         .website(WEBSITE)
         .website_label("GitHub")
