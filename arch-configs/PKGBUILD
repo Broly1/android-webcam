@@ -1,7 +1,7 @@
 # Maintainer: Broly <jack_sparrow_xv@proton.me>
 pkgname=android-webcam
 pkgver=1.0.4
-pkgrel=4
+pkgrel=5
 pkgdesc="Use Android device as a webcam via scrcpy and v4l2loopback"
 arch=('x86_64')
 url="https://github.com/broly/android-webcam"
