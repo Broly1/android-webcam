@@ -1,0 +1,9 @@
+#!/bin/sh
+# Loads (or reloads) v4l2loopback with Android Webcam's options, which resets /dev/video9.
+# Run by android-webcam through pkexec; the polkit policy next to it lets the active desktop
+# user do this without a password. It takes no arguments and does nothing else.
+set -e
+if grep -q '^v4l2loopback ' /proc/modules; then
+    modprobe -r v4l2loopback
+fi
+modprobe v4l2loopback video_nr=9 card_label=Android-Webcam exclusive_caps=1

@@ -30,4 +30,6 @@ assets = [
     ["debian-configs/modules.conf", "/etc/modules-load.d/android-webcam.conf", "644"],
     ["debian-configs/v4l2loopback.conf", "/etc/modprobe.d/android-webcam.conf", "644"],
     ["resources/android-webcam.png", "/usr/share/icons/hicolor/256x256/apps/android-webcam.png", "644"],
+    ["resources/polkit/reload-v4l2loopback", "/usr/lib/android-webcam/reload-v4l2loopback", "755"],
+    ["resources/polkit/com.android.webcam.policy", "/usr/share/polkit-1/actions/com.android.webcam.policy", "644"],
 ]

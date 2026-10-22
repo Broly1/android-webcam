@@ -578,9 +578,7 @@ fn build_ui(app: &Application) {
             thread::sleep(Duration::from_millis(500));
 
             if !Path::new("/dev/video9").exists() {
-                let _ = Command::new("pkexec")
-                    .args(["modprobe", "v4l2loopback", "video_nr=9", "card_label=Android-Webcam", "exclusive_caps=1"])
-                    .status();
+                reload_v4l2loopback();
             }
 
             if let Some(problem) = scrcpy_problem() {
@@ -1748,8 +1746,8 @@ fn check_sink_format(s: &mut AppState, status_label: &Label) {
     s.format_check_due = (ran_for < FORMAT_CHECK_TIMEOUT).then(|| Instant::now() + FORMAT_CHECK_INTERVAL);
 }
 
-/// /dev/video9 stopped accepting video (see CrashCause::SinkBroken). Reload v4l2loopback (one
-/// password prompt) and relaunch, once. The module can't be unloaded while another app has
+/// /dev/video9 stopped accepting video (see CrashCause::SinkBroken). Reload v4l2loopback (see
+/// reload_v4l2loopback) and relaunch, once. The module can't be unloaded while another app has
 /// the camera open, so then just say which app to close.
 fn recover_broken_sink(s: &mut AppState, launch: &LaunchParams, status_label: &Label) {
     let fail = |msg: &str| status_label.set_markup(&format!("<span foreground='red'>{}</span>", esc(msg)));
@@ -2099,7 +2097,7 @@ fn terminate_gracefully(child: &mut Child) {
 ///   off, the device refuses every stream after the first ("VIDIOC_G_FMT: Invalid argument")
 ///   until the module is reloaded. Turning it off between streams breaks it the same way. So
 ///   it stays on, and since the kept size can't change, picking another resolution reloads the
-///   module first (one password prompt). Restarts at the same size need nothing.
+///   module first (see reload_v4l2loopback). Restarts at the same size need nothing.
 /// - 0.13 and later: with it on, the device keeps a stale format (640x480 BGR4 by default)
 ///   that the next stream can't replace, so scrcpy's frames are read with the wrong layout. Off.
 fn prepare_v4l2_sink(res: &str) {
@@ -2131,14 +2129,21 @@ pub fn v4l2loopback_is_old(version: Option<&str>) -> bool {
     }
 }
 
-/// Unloads and reloads v4l2loopback (one password prompt), which resets /dev/video9. Fails if
-/// an app still has the camera open.
+/// Installed by the packages with a polkit policy that lets the user at the computer run it
+/// without a password (resources/polkit/).
+const RELOAD_HELPER: &str = "/usr/lib/android-webcam/reload-v4l2loopback";
+
+/// Loads or reloads v4l2loopback, which resets /dev/video9. Through the packaged helper there's
+/// no password prompt; without it (e.g. running a build from the source tree) pkexec asks for
+/// one. Fails if an app still has the camera open.
 fn reload_v4l2loopback() -> bool {
-    let ok = Command::new("pkexec")
-        .args(["sh", "-c", "modprobe -r v4l2loopback && modprobe v4l2loopback video_nr=9 card_label=Android-Webcam exclusive_caps=1"])
-        .status()
-        .map(|st| st.success())
-        .unwrap_or(false);
+    let mut pkexec = Command::new("pkexec");
+    if Path::new(RELOAD_HELPER).exists() {
+        pkexec.arg(RELOAD_HELPER);
+    } else {
+        pkexec.args(["sh", "-c", "if grep -q '^v4l2loopback ' /proc/modules; then modprobe -r v4l2loopback || exit 1; fi; modprobe v4l2loopback video_nr=9 card_label=Android-Webcam exclusive_caps=1"]);
+    }
+    let ok = pkexec.status().map(|st| st.success()).unwrap_or(false);
     debug_log(&format!("v4l2loopback reload: {}", if ok { "done" } else { "failed or cancelled" }));
     // The new /dev/video9 only becomes usable once udev has set its permissions.
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -2344,6 +2349,18 @@ mod tests {
             CrashCause::SinkBroken
         );
         assert_eq!(crash_cause(""), CrashCause::Other);
+    }
+
+    #[test]
+    fn test_app_version_matches_packages() {
+        // About shows APP_VERSION; the Arch package must carry the same version.
+        let pkgbuild = include_str!("../arch-configs/PKGBUILD");
+        let field = |name: &str| {
+            pkgbuild.lines().find_map(|l| l.strip_prefix(name)).map(str::trim).unwrap_or_default().to_string()
+        };
+        let arch = format!("{}-{}", field("pkgver="), field("pkgrel="));
+        assert_eq!(env!("APP_VERSION"), arch);
+        assert!(env!("APP_VERSION").starts_with(env!("CARGO_PKG_VERSION")));
     }
 
     #[test]

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>Android Webcam</vendor>
+  <vendor_url>https://github.com/Broly1/android-webcam</vendor_url>
+  <!-- Resetting the virtual camera only reloads v4l2loopback: the user at the computer may do
+       it without a password; remote and inactive sessions still need an administrator. -->
+  <action id="com.android.webcam.reload-v4l2loopback">
+    <description>Reset the Android Webcam virtual camera</description>
+    <message>Authentication is required to reset the virtual camera</message>
+    <icon_name>android-webcam</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/android-webcam/reload-v4l2loopback</annotate>
+  </action>
+</policyconfig>
