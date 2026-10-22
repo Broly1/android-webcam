@@ -2173,7 +2173,10 @@ fn set_v4l2_keep_format(on: bool) {
 fn install_css() {
     let Some(display) = gdk::Display::default() else { return };
     let provider = CssProvider::new();
-    provider.load_from_data("button.stream-btn { min-height: 0; padding: 4px 6px; }");
+    provider.load_from_data(
+        "button.stream-btn { min-height: 0; padding: 4px 6px; }
+         window.csd { border-radius: 12px; }",
+    );
     gtk4::style_context_add_provider_for_display(&display, &provider, gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION);
 }
 
